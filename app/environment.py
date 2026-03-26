@@ -12,12 +12,18 @@ from app.scenarios.base import BaseScenario
 from app.scenarios.task1_memory_leak import MemoryLeakScenario
 from app.scenarios.task2_db_cascade import DBCascadeScenario
 from app.scenarios.task3_race_condition import RaceConditionScenario
+from app.scenarios.task4_dns_failure import DNSFailureScenario
+from app.scenarios.task5_cert_expiry import CertExpiryScenario
+from app.scenarios.task6_network_partition import NetworkPartitionScenario
 
 
 SCENARIO_MAP: dict[str, type[BaseScenario]] = {
     "task1_memory_leak": MemoryLeakScenario,
     "task2_db_cascade": DBCascadeScenario,
     "task3_race_condition": RaceConditionScenario,
+    "task4_dns_failure": DNSFailureScenario,
+    "task5_cert_expiry": CertExpiryScenario,
+    "task6_network_partition": NetworkPartitionScenario,
 }
 
 

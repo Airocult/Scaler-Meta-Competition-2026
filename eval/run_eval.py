@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Comprehensive SREBench Evaluation Script
-Tests all 3 tasks across multiple evaluation paths:
+Tests all 6 tasks across multiple evaluation paths:
   - Optimal path (maximum score)
   - Suboptimal paths (partial investigation)
   - Anti-patterns / edge cases (wrong service, repeated actions, escalation)
@@ -300,6 +300,163 @@ async def eval_task3_rollback_config(client):
 
 
 # ═══════════════════════════════════════════════════════════
+# TASK 4: DNS Resolution Failure (Easy-Medium)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task4_optimal(client):
+    """Optimal path: investigate auth → DNS diagnostic → flush DNS → verify."""
+    await reset_task(client, "task4_dns_failure")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "auth-service"})
+    await do_step(client, "run_diagnostic", {"service": "auth-service", "type": "dns"})
+    await do_step(client, "apply_fix", {"service": "auth-service", "fix_type": "flush_dns"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task4", "Optimal path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+async def eval_task4_with_postmortem(client):
+    """Optimal + postmortem for maximum score."""
+    await reset_task(client, "task4_dns_failure")
+    await do_step(client, "read_logs", {"service": "auth-service"})
+    await do_step(client, "run_diagnostic", {"service": "auth-service", "type": "dns"})
+    await do_step(client, "apply_fix", {"service": "auth-service", "fix_type": "flush_dns"})
+    await do_step(client, "verify_health")
+    code, data = await do_step(client, "write_postmortem",
+                               {"content": "Root cause: auth-service DNS cache had stale entry for user-db. The cached IP was 10.0.0.99 but user-db moved to 10.0.1.15. Fixed by flushing DNS cache."})
+    score = await get_grader(client)
+    record("Task4", "With postmortem (max score)", score >= 0.85, f"score={score:.4f}")
+    return score
+
+
+async def eval_task4_wrong_service(client):
+    """Fix wrong service — no effect."""
+    await reset_task(client, "task4_dns_failure")
+    await do_step(client, "apply_fix", {"service": "api-gateway", "fix_type": "restart"})
+    score = await get_grader(client)
+    record("Task4", "Wrong service fix", score <= 0.10, f"score={score:.4f}")
+
+
+async def eval_task4_escalation(client):
+    """Use escalation hint then fix correctly."""
+    await reset_task(client, "task4_dns_failure")
+    await do_step(client, "escalate")
+    await do_step(client, "apply_fix", {"service": "auth-service", "fix_type": "flush_dns"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task4", "Escalation + fix (hint penalty)", data["done"] and 0.35 <= score <= 0.80,
+           f"score={score:.4f}")
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 5: Certificate Expiry Chain (Medium-Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task5_optimal(client):
+    """Optimal: trace TLS errors → diagnose cert → renew cert → verify."""
+    await reset_task(client, "task5_cert_expiry")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "tls"})
+    await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "renew_cert"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task5", "Optimal path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+async def eval_task5_with_postmortem(client):
+    """Optimal + postmortem."""
+    await reset_task(client, "task5_cert_expiry")
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "tls"})
+    await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "renew_cert"})
+    await do_step(client, "verify_health")
+    code, data = await do_step(client, "write_postmortem",
+                               {"content": "Root cause: TLS certificate on payment-service expired. cert-manager auto-renewal had failed because the pod was OOMKilled. Fixed by manual cert renewal."})
+    score = await get_grader(client)
+    record("Task5", "With postmortem (max score)", score >= 0.85, f"score={score:.4f}")
+    return score
+
+
+async def eval_task5_restart_trap(client):
+    """Restart payment-service without renewing cert — doesn't fix."""
+    await reset_task(client, "task5_cert_expiry")
+    await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "restart"})
+    score = await get_grader(client)
+    record("Task5", "Restart trap (cert still expired)", score <= 0.15, f"score={score:.4f}")
+
+
+async def eval_task5_wrong_service(client):
+    """Fix order-service (victim) — wrong."""
+    await reset_task(client, "task5_cert_expiry")
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+    score = await get_grader(client)
+    record("Task5", "Wrong service (order-service)", score <= 0.10, f"score={score:.4f}")
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 6: Split-Brain Network Partition (Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task6_optimal(client):
+    """Full optimal: investigate → find deploy → rollback iptables → reconcile → verify."""
+    await reset_task(client, "task6_network_partition")
+    await do_step(client, "read_logs", {"service": "inventory-service"})
+    await do_step(client, "check_deployments")
+    await do_step(client, "run_diagnostic", {"service": "inventory-service", "type": "network"})
+    await do_step(client, "apply_fix", {"fix_type": "rollback_deploy"})
+    await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "reconcile_data"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task6", "Optimal path", data["done"] and score >= 0.70, f"score={score:.4f}")
+    return score
+
+
+async def eval_task6_with_postmortem(client):
+    """Optimal + postmortem."""
+    await reset_task(client, "task6_network_partition")
+    await do_step(client, "read_logs", {"service": "inventory-service"})
+    await do_step(client, "check_deployments")
+    await do_step(client, "run_diagnostic", {"service": "inventory-service", "type": "network"})
+    await do_step(client, "apply_fix", {"fix_type": "rollback_deploy"})
+    await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "reconcile_data"})
+    await do_step(client, "verify_health")
+    code, data = await do_step(client, "write_postmortem",
+                               {"content": "Root cause: deploy-net-001 added iptables rule blocking inventory-service → inventory-db traffic. Caused split-brain: stale cache served to order-service while DB had updated stock. 15 oversold orders. Fixed by rolling back iptables rule and reconciling cache."})
+    score = await get_grader(client)
+    record("Task6", "With postmortem (max score)", score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+async def eval_task6_partial_fix(client):
+    """Fix network but skip data reconciliation."""
+    await reset_task(client, "task6_network_partition")
+    await do_step(client, "apply_fix", {"fix_type": "rollback_deploy"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task6", "Partial fix (no reconciliation)", not data["done"] and score <= 0.40,
+           f"score={score:.4f}, done={data['done']}")
+
+
+async def eval_task6_restart_trap(client):
+    """Restart inventory-service without fixing network — still fails."""
+    await reset_task(client, "task6_network_partition")
+    await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "restart"})
+    score = await get_grader(client)
+    record("Task6", "Restart trap (network still partitioned)", score <= 0.10, f"score={score:.4f}")
+
+
+async def eval_task6_reconcile_before_network(client):
+    """Try to reconcile data before fixing network — fails."""
+    await reset_task(client, "task6_network_partition")
+    await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "reconcile_data"})
+    score = await get_grader(client)
+    record("Task6", "Reconcile before network fix (no effect)", score <= 0.10, f"score={score:.4f}")
+
+
+# ═══════════════════════════════════════════════════════════
 # OPENENV ENDPOINT COMPLIANCE
 # ═══════════════════════════════════════════════════════════
 
@@ -347,7 +504,7 @@ async def eval_openenv_endpoints(client):
     # Custom endpoints
     resp = await client.get("/tasks")
     data = resp.json()
-    record("OpenEnv", "/tasks returns 3 tasks", len(data.get("tasks", [])) == 3)
+    record("OpenEnv", "/tasks returns 6 tasks", len(data.get("tasks", [])) == 6)
 
     resp = await client.get("/grader")
     score = resp.json().get("episode_score")
@@ -519,6 +676,28 @@ async def main():
         await eval_task3_partial_investigation(client)
         await eval_task3_rollback_config(client)
 
+        # ── Task 4 ─────────────────────────────────
+        print("\n── Task 4: DNS Resolution Failure (Easy-Medium) ──")
+        t4_optimal = await eval_task4_optimal(client)
+        t4_max = await eval_task4_with_postmortem(client)
+        await eval_task4_wrong_service(client)
+        await eval_task4_escalation(client)
+
+        # ── Task 5 ─────────────────────────────────
+        print("\n── Task 5: Certificate Expiry Chain (Medium-Hard) ──")
+        t5_optimal = await eval_task5_optimal(client)
+        t5_max = await eval_task5_with_postmortem(client)
+        await eval_task5_restart_trap(client)
+        await eval_task5_wrong_service(client)
+
+        # ── Task 6 ─────────────────────────────────
+        print("\n── Task 6: Network Partition (Hard) ──")
+        t6_optimal = await eval_task6_optimal(client)
+        t6_max = await eval_task6_with_postmortem(client)
+        await eval_task6_partial_fix(client)
+        await eval_task6_restart_trap(client)
+        await eval_task6_reconcile_before_network(client)
+
         # ── OpenEnv Compliance ─────────────────────
         print("\n── OpenEnv Endpoint Compliance ──")
         await eval_openenv_endpoints(client)
@@ -563,9 +742,17 @@ async def main():
     print(f"  Task 2 Max (w/postm):  {t2_max:.4f}")
     print(f"  Task 3 Optimal:        {t3_optimal:.4f}")
     print(f"  Task 3 Max (w/postm):  {t3_max:.4f}")
+    print(f"  Task 4 Optimal:        {t4_optimal:.4f}")
+    print(f"  Task 4 Max (w/postm):  {t4_max:.4f}")
+    print(f"  Task 5 Optimal:        {t5_optimal:.4f}")
+    print(f"  Task 5 Max (w/postm):  {t5_max:.4f}")
+    print(f"  Task 6 Optimal:        {t6_optimal:.4f}")
+    print(f"  Task 6 Max (w/postm):  {t6_max:.4f}")
     print()
-    print(f"  Average optimal:       {(t1_optimal + t2_optimal + t3_optimal) / 3:.4f}")
-    print(f"  Average max:           {(t1_max + t2_max + t3_max) / 3:.4f}")
+    all_optimal = [t1_optimal, t2_optimal, t3_optimal, t4_optimal, t5_optimal, t6_optimal]
+    all_max = [t1_max, t2_max, t3_max, t4_max, t5_max, t6_max]
+    print(f"  Average optimal:       {sum(all_optimal) / len(all_optimal):.4f}")
+    print(f"  Average max:           {sum(all_max) / len(all_max):.4f}")
 
     print("\n" + "=" * 72)
     return 0 if failed == 0 else 1

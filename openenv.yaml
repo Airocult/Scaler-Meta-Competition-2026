@@ -31,6 +31,33 @@ tasks:
       An intermittent 5xx spike began 12 minutes after a config change.
       The agent must correlate the deploy timeline, diff the config,
       identify the cache race condition, roll back, and verify resolution.
+  - id: task4_dns_failure
+    name: DNS Resolution Failure
+    difficulty: easy-medium
+    max_steps: 25
+    description: >
+      auth-service cannot resolve user-db DNS name due to stale DNS cache.
+      Auth requests fail intermittently. Agent must identify the DNS
+      resolution failure, flush the stale cache, and verify auth recovery.
+  - id: task5_cert_expiry
+    name: TLS Certificate Expiry Chain
+    difficulty: medium-hard
+    max_steps: 35
+    description: >
+      payment-service TLS certificate expired, causing SSL handshake
+      failures for both incoming (from order-service) and outgoing
+      (mTLS to payment-db) connections. Agent must trace the cert chain,
+      renew the certificate, and verify full payment path recovery.
+  - id: task6_network_partition
+    name: Split-Brain Network Partition
+    difficulty: hard
+    max_steps: 40
+    description: >
+      A misconfigured iptables deploy created a network partition between
+      inventory-service and inventory-db. inventory-service serves stale
+      cached data causing overselling. Agent must identify the partition,
+      rollback the network change, reconcile stale data, and verify
+      consistency.
 action_space:
   type: object
   fields:
@@ -80,3 +107,6 @@ baseline_scores:
   task1_memory_leak: 0.62
   task2_db_cascade: 0.43
   task3_race_condition: 0.38
+  task4_dns_failure: 0.55
+  task5_cert_expiry: 0.45
+  task6_network_partition: 0.35

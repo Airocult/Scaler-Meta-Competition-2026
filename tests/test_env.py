@@ -200,10 +200,110 @@ async def test_tasks_endpoint():
         resp = await client.get("/tasks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["tasks"]) == 3
+        assert len(data["tasks"]) == 6
         ids = {t["id"] for t in data["tasks"]}
-        assert ids == {"task1_memory_leak", "task2_db_cascade", "task3_race_condition"}
+        assert ids == {"task1_memory_leak", "task2_db_cascade", "task3_race_condition",
+                       "task4_dns_failure", "task5_cert_expiry", "task6_network_partition"}
 
+# ─── 8b. Task 4 Reset ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reset_task4():
+    """Task 4 reset returns degraded auth-service."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        obs = await reset_task(client, "task4_dns_failure")
+        assert obs["service_statuses"]["auth-service"]["status"] == "degraded"
+        assert obs["service_statuses"]["user-db"]["status"] == "healthy"
+
+
+# ─── 8c. Task 4 Optimal Path ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task4_optimal_path():
+    """Full optimal episode for DNS failure — score >= 0.80."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task4_dns_failure")
+        await do_step(client, "list_services")
+        await do_step(client, "read_logs", {"service": "auth-service"},
+                      "Reading auth-service logs to find DNS errors")
+        await do_step(client, "run_diagnostic", {"service": "auth-service", "type": "dns"},
+                      "Running DNS diagnostic on auth-service")
+        await do_step(client, "apply_fix",
+                      {"service": "auth-service", "fix_type": "flush_dns"},
+                      "Flushing stale DNS cache on auth-service")
+        result = await do_step(client, "verify_health", {},
+                               "Verifying auth-service health after DNS fix")
+        assert result["done"] is True
+        assert result["observation"]["episode_score"] >= 0.80
+
+
+# ─── 8d. Task 5 Reset ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reset_task5():
+    """Task 5 reset returns critical payment-service."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        obs = await reset_task(client, "task5_cert_expiry")
+        assert obs["service_statuses"]["payment-service"]["status"] == "down"
+        assert obs["service_statuses"]["order-service"]["status"] == "degraded"
+
+
+# ─── 8e. Task 5 Optimal Path ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task5_optimal_path():
+    """Full optimal episode for cert expiry — score >= 0.80."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task5_cert_expiry")
+        await do_step(client, "read_logs", {"service": "payment-service"},
+                      "Reading payment-service logs to find TLS errors")
+        await do_step(client, "run_diagnostic",
+                      {"service": "payment-service", "type": "tls"},
+                      "Running TLS diagnostic on payment-service")
+        await do_step(client, "apply_fix",
+                      {"service": "payment-service", "fix_type": "renew_cert"},
+                      "Renewing expired TLS certificate on payment-service")
+        result = await do_step(client, "verify_health", {},
+                               "Verifying payment-service health after cert renewal")
+        assert result["done"] is True
+        assert result["observation"]["episode_score"] >= 0.80
+
+
+# ─── 8f. Task 6 Reset ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reset_task6():
+    """Task 6 reset returns degraded inventory-service."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        obs = await reset_task(client, "task6_network_partition")
+        assert obs["service_statuses"]["inventory-service"]["status"] == "degraded"
+        assert obs["service_statuses"]["order-service"]["status"] == "degraded"
+
+
+# ─── 8g. Task 6 Optimal Path ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task6_optimal_path():
+    """Full optimal episode for network partition — score >= 0.70."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task6_network_partition")
+        await do_step(client, "read_logs", {"service": "inventory-service"},
+                      "Reading inventory-service logs to find partition evidence")
+        await do_step(client, "check_deployments", {},
+                      "Checking recent deploys for network changes")
+        await do_step(client, "run_diagnostic",
+                      {"service": "inventory-service", "type": "network"},
+                      "Running network diagnostic on inventory-service")
+        await do_step(client, "apply_fix",
+                      {"fix_type": "rollback_deploy"},
+                      "Rolling back the iptables deploy to fix network partition")
+        await do_step(client, "apply_fix",
+                      {"service": "inventory-service", "fix_type": "reconcile_data"},
+                      "Reconciling stale cached data on inventory-service")
+        result = await do_step(client, "verify_health", {},
+                               "Verifying full system health after partition fix")
+        assert result["done"] is True
+        assert result["observation"]["episode_score"] >= 0.70
 
 # ─── 9. Reproducibility ─────────────────────────────────
 

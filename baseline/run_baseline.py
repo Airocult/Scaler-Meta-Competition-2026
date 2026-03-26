@@ -15,7 +15,8 @@ import httpx
 from openai import OpenAI
 
 BASE_URL = os.getenv("SREBENCH_URL", "http://localhost:7860")
-TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition"]
+TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition",
+         "task4_dns_failure", "task5_cert_expiry", "task6_network_partition"]
 SEED = 42
 MODEL = os.getenv("BASELINE_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
