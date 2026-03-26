@@ -30,6 +30,26 @@ class MetricsSimulator:
                 "api-gateway": round(rng.uniform(0.15, 0.25), 2),
             }
             return affected.get(service, round(rng.uniform(0.0, 0.02), 3))
+        elif scenario == "task4_dns_failure":
+            rates = {
+                "auth-service": round(rng.uniform(0.38, 0.48), 2),
+                "api-gateway": round(rng.uniform(0.25, 0.35), 2),
+            }
+            return rates.get(service, round(rng.uniform(0.0, 0.02), 3))
+        elif scenario == "task5_cert_expiry":
+            rates = {
+                "payment-service": round(rng.uniform(0.90, 0.98), 2),
+                "order-service": round(rng.uniform(0.60, 0.72), 2),
+                "payment-db": round(rng.uniform(0.85, 0.95), 2),
+                "api-gateway": round(rng.uniform(0.40, 0.50), 2),
+            }
+            return rates.get(service, round(rng.uniform(0.0, 0.02), 3))
+        elif scenario == "task6_network_partition":
+            rates = {
+                "inventory-service": round(rng.uniform(0.03, 0.08), 2),
+                "order-service": round(rng.uniform(0.08, 0.15), 2),
+            }
+            return rates.get(service, round(rng.uniform(0.0, 0.02), 3))
         return round(rng.uniform(0.0, 0.02), 3)
 
     @classmethod
@@ -53,6 +73,25 @@ class MetricsSimulator:
                 lo, hi = slow[service]
                 return rng.randint(lo, hi)
             return rng.randint(20, 150)
+        elif scenario == "task4_dns_failure":
+            slow = {"auth-service": (7000, 12000), "api-gateway": (5000, 8000)}
+            if service in slow:
+                lo, hi = slow[service]
+                return rng.randint(lo, hi)
+            return rng.randint(20, 150)
+        elif scenario == "task5_cert_expiry":
+            slow = {"payment-service": (30, 80), "order-service": (10000, 15000),
+                    "api-gateway": (8000, 12000)}
+            if service in slow:
+                lo, hi = slow[service]
+                return rng.randint(lo, hi)
+            return rng.randint(20, 150)
+        elif scenario == "task6_network_partition":
+            slow = {"inventory-service": (20, 50), "order-service": (150, 300)}
+            if service in slow:
+                lo, hi = slow[service]
+                return rng.randint(lo, hi)
+            return rng.randint(20, 150)
         return rng.randint(20, 150)
 
     @classmethod
@@ -60,6 +99,12 @@ class MetricsSimulator:
         rng = _random_module.Random(seed + hash(service) + 2)
         if scenario == "task1_memory_leak" and service == "order-service":
             return round(rng.uniform(75, 95), 1)
+        elif scenario == "task4_dns_failure" and service == "auth-service":
+            return round(rng.uniform(18, 30), 1)
+        elif scenario == "task5_cert_expiry" and service == "payment-service":
+            return round(rng.uniform(3, 8), 1)
+        elif scenario == "task6_network_partition" and service == "inventory-service":
+            return round(rng.uniform(10, 18), 1)
         return round(rng.uniform(10, 45), 1)
 
     @classmethod
@@ -67,6 +112,12 @@ class MetricsSimulator:
         rng = _random_module.Random(seed + hash(service) + 3)
         if scenario == "task1_memory_leak" and service == "order-service":
             return round(rng.uniform(95, 99), 1)
+        elif scenario == "task4_dns_failure" and service == "auth-service":
+            return round(rng.uniform(30, 42), 1)
+        elif scenario == "task5_cert_expiry" and service == "payment-service":
+            return round(rng.uniform(18, 25), 1)
+        elif scenario == "task6_network_partition" and service == "inventory-service":
+            return round(rng.uniform(50, 62), 1)
         return round(rng.uniform(20, 55), 1)
 
     @classmethod
@@ -74,6 +125,12 @@ class MetricsSimulator:
         rng = _random_module.Random(seed + hash(service) + 4)
         if scenario == "task2_db_cascade" and service == "payment-db":
             return round(rng.uniform(0.96, 0.99), 2)
+        elif scenario == "task4_dns_failure" and service == "auth-service":
+            return round(rng.uniform(0.05, 0.18), 2)
+        elif scenario == "task5_cert_expiry" and service == "payment-service":
+            return round(rng.uniform(0.0, 0.02), 2)
+        elif scenario == "task6_network_partition" and service == "inventory-service":
+            return round(rng.uniform(0.0, 0.02), 2)
         return round(rng.uniform(0.10, 0.45), 2)
 
     @classmethod
@@ -102,6 +159,21 @@ class MetricsSimulator:
                 # Pool usage climbing
                 base_pool = 0.3 + (m * 0.01)
                 value = round(min(0.99, base_pool + rng.uniform(-0.02, 0.02)), 3)
+            elif scenario == "task4_dns_failure" and service == "auth-service" and metric == "error_rate":
+                if m < 52:
+                    value = round(rng.uniform(0.001, 0.01), 4)
+                else:
+                    value = round(rng.uniform(0.35, 0.50), 3)
+            elif scenario == "task5_cert_expiry" and service == "payment-service" and metric == "error_rate":
+                if m < 58:
+                    value = round(rng.uniform(0.001, 0.01), 4)
+                else:
+                    value = round(rng.uniform(0.90, 0.98), 3)
+            elif scenario == "task6_network_partition" and service == "inventory-service" and metric == "write_error_rate":
+                if m < 45:
+                    value = round(rng.uniform(0.001, 0.01), 4)
+                else:
+                    value = round(rng.uniform(0.95, 1.0), 3)
             else:
                 value = round(rng.uniform(0.01, 0.15), 3)
 

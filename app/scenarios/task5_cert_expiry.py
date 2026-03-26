@@ -124,7 +124,7 @@ class CertExpiryScenario(BaseScenario):
                 return self._build_observation(result), reward, False
 
             else:
-                logs = LogGenerator.generate("task1_memory_leak", service, self.seed)
+                logs = LogGenerator.generate(self.task_id, service, self.seed)
                 result = f"Logs for {service} (last 20 entries):\n" + "\n".join(logs[:8])
                 reward = self._compute_reward("info_gathered")
                 return self._build_observation(result), reward, False
@@ -155,7 +155,7 @@ class CertExpiryScenario(BaseScenario):
                 reward = self._compute_reward("info_gathered")
                 return self._build_observation(result), reward, False
             else:
-                summary = MetricsSimulator.get_metrics_summary(service, "task1_memory_leak", self.seed)
+                summary = MetricsSimulator.get_metrics_summary(service, self.task_id, self.seed)
                 result = f"Metrics for {service}:\n"
                 for k, v in summary.items():
                     if k != "service":
