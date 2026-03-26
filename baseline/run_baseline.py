@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Baseline agent: Runs each task with ReAct-style prompting via OpenRouter API.
-Reads OPENROUTER_API_KEY from environment (falls back to OPENAI_API_KEY).
+Baseline agent: Runs each task with ReAct-style prompting via NVIDIA API (DeepSeek).
 Usage:
   python baseline/run_baseline.py            # prints human-readable
   python baseline/run_baseline.py --json     # prints JSON only (for /baseline endpoint)
@@ -18,8 +17,8 @@ BASE_URL = os.getenv("SREBENCH_URL", "http://localhost:7860")
 TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition",
          "task4_dns_failure", "task5_cert_expiry", "task6_network_partition"]
 SEED = 42
-MODEL = os.getenv("BASELINE_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
-OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+MODEL = os.getenv("BASELINE_MODEL", "deepseek-ai/deepseek-v3.1-terminus")
+API_BASE = os.getenv("BASELINE_API_BASE", "https://integrate.api.nvidia.com/v1")
 
 SYSTEM_PROMPT = """You are an expert SRE on-call engineer.
 You will receive an incident alert and must investigate and resolve it.
@@ -49,6 +48,41 @@ Only output valid JSON — no markdown, no commentary outside the JSON.
 """
 
 
+def call_llm_streaming(client: OpenAI, messages: list) -> str:
+    """Call the LLM and return the content (non-streaming for reliability)."""
+    completion = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        temperature=0.2,
+        top_p=0.7,
+        max_tokens=8192,
+    )
+    return completion.choices[0].message.content
+
+
+def extract_json(content: str) -> dict:
+    """Extract JSON from LLM response, handling markdown fences and extra text."""
+    content = content.strip()
+    # Remove <think>...</think> tags if present
+    import re
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    # Strip markdown fences
+    if content.startswith("```"):
+        lines = content.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        content = "\n".join(lines).strip()
+    # Try direct parse
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    # Try to find JSON object in the text
+    match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", content)
+    if match:
+        return json.loads(match.group())
+    raise ValueError(f"No valid JSON found in: {content[:200]}")
+
+
 def run_episode(client: OpenAI, task_id: str) -> float:
     """Runs one full episode. Returns final grader score."""
     # 1. Reset
@@ -73,28 +107,35 @@ def run_episode(client: OpenAI, task_id: str) -> float:
                  "task5_cert_expiry": 35,
                  "task6_network_partition": 40}[task_id]
 
+    consecutive_errors = 0
     for step_num in range(max_steps):
-        # 2. Get LLM action
-        try:
-            completion = client.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                temperature=0.2,
-            )
-            content = completion.choices[0].message.content
-            # Strip markdown fences if model wraps JSON in ```json ... ```
-            content = content.strip()
-            if content.startswith("```"):
-                lines = content.split("\n")
-                lines = [l for l in lines if not l.strip().startswith("```")]
-                content = "\n".join(lines)
-            raw_action = json.loads(content)
-            # Ensure reasoning field is present
-            if "reasoning" not in raw_action:
-                raw_action["reasoning"] = "No explicit reasoning provided."
-        except Exception as e:
-            print(f"  [step {step_num}] LLM error: {e}", file=sys.stderr)
-            break
+        # 2. Get LLM action (with retry)
+        raw_action = None
+        content = ""
+        for attempt in range(3):
+            try:
+                content = call_llm_streaming(client, messages)
+                if not content or not content.strip():
+                    print(f"  [step {step_num}] Empty response (attempt {attempt+1})", file=sys.stderr)
+                    continue
+                raw_action = extract_json(content)
+                if "reasoning" not in raw_action:
+                    raw_action["reasoning"] = "No explicit reasoning provided."
+                break
+            except Exception as e:
+                print(f"  [step {step_num}] LLM error (attempt {attempt+1}): {e}", file=sys.stderr)
+                if attempt == 2:
+                    break
+
+        if raw_action is None:
+            consecutive_errors += 1
+            if consecutive_errors >= 3:
+                print(f"  [step {step_num}] 3 consecutive errors, giving up", file=sys.stderr)
+                break
+            # Try escalation as fallback
+            raw_action = {"action_type": "escalate", "parameters": {}, "reasoning": "Fallback after parse error"}
+        else:
+            consecutive_errors = 0
 
         # 3. Send to env (OpenEnv format wraps action)
         try:
@@ -113,8 +154,7 @@ def run_episode(client: OpenAI, task_id: str) -> float:
         done = step_data["done"]
 
         # 4. Add to message history
-        messages.append({"role": "assistant",
-                         "content": completion.choices[0].message.content})
+        messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content":
             f"Result: {obs['last_action_result']}\n"
             f"Incident phase: {obs['incident_phase']}\n"
@@ -138,13 +178,14 @@ def main():
                         help="Output JSON only (for /baseline endpoint)")
     args = parser.parse_args()
 
-    api_key = os.environ.get("OPENROUTER_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+    api_key = os.environ.get("NVIDIA_API_KEY",
+              os.environ.get("OPENROUTER_API_KEY",
+              os.environ.get("OPENAI_API_KEY", "")))
     if not api_key:
-        print("ERROR: OPENROUTER_API_KEY (or OPENAI_API_KEY) environment variable not set.", file=sys.stderr)
-        print("Get an OpenRouter key from https://openrouter.ai/keys", file=sys.stderr)
+        print("ERROR: NVIDIA_API_KEY environment variable not set.", file=sys.stderr)
         sys.exit(1)
 
-    client = OpenAI(api_key=api_key, base_url=OPENROUTER_BASE)
+    client = OpenAI(api_key=api_key, base_url=API_BASE)
     results = {}
 
     for task_id in TASKS:
