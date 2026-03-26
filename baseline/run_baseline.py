@@ -68,7 +68,10 @@ def run_episode(client: OpenAI, task_id: str) -> float:
 
     max_steps = {"task1_memory_leak": 20,
                  "task2_db_cascade": 30,
-                 "task3_race_condition": 40}[task_id]
+                 "task3_race_condition": 40,
+                 "task4_dns_failure": 25,
+                 "task5_cert_expiry": 35,
+                 "task6_network_partition": 40}[task_id]
 
     for step_num in range(max_steps):
         # 2. Get LLM action
