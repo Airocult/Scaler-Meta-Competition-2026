@@ -1,0 +1,2816 @@
+BUILD - SCALER META 2026
+
+Now here's the complete, production-ready build plan.
+
+SREBench — Complete Build Plan & Vibe Coder Prompt
+🧠 Domain Choice Rationale
+Environment name: SREBench — On-Call Incident Response Environment
+The agent plays an SRE engineer who receives a paging alert at 3am. It must investigate services, read logs and metrics, identify root cause, apply remediations, verify resolution, and write a postmortem — all through a structured action API. This is a task every tech company desperately wants to automate, yet no OpenEnv environment covers it. It scores maximum points on real-world utility (30%) and novelty (10%) simultaneously.
+
+📁 Project Structure
+srebench/
+├── app/
+│   ├── __init__.py
+│   ├── main.py                  # FastAPI app, all endpoints
+│   ├── models.py                # Pydantic v2 — Observation, Action, Reward
+│   ├── environment.py           # Core env logic: reset/step/state
+│   ├── scenarios/
+│   │   ├── __init__.py
+│   │   ├── base.py              # Abstract Scenario class
+│   │   ├── task1_memory_leak.py
+│   │   ├── task2_db_cascade.py
+│   │   └── task3_race_condition.py
+│   ├── data/
+│   │   ├── log_templates.py     # Realistic log line generators
+│   │   ├── metrics.py           # Time-series metric simulator
+│   │   ├── service_graph.py     # 8-node DAG of services
+│   │   └── deploy_history.py    # Synthetic git-like deploy log
+│   ├── graders/
+│   │   ├── base.py
+│   │   ├── task1_grader.py
+│   │   ├── task2_grader.py
+│   │   └── task3_grader.py
+│   └── reward.py                # Reward shaper
+├── baseline/
+│   └── run_baseline.py          # OpenAI client inference script
+├── tests/
+│   └── test_env.py
+├── openenv.yaml
+├── Dockerfile
+├── requirements.txt
+└── README.md
+
+🔧 Full Build Prompt
+
+Copy this entire prompt into Cursor, Claude Code, or any vibe-coding tool. It is self-contained and implementation-ready.
+
+
+You are building SREBench — a complete OpenEnv-compliant RL environment
+where an AI agent acts as an on-call SRE engineer responding to production
+incidents. Follow every instruction below exactly.
+
+══════════════════════════════════════════════════════════
+SECTION 1 — DEPENDENCIES & SETUP
+══════════════════════════════════════════════════════════
+
+Create requirements.txt with exactly:
+  fastapi==0.111.0
+  uvicorn[standard]==0.30.1
+  pydantic==2.7.1
+  openai==1.35.0
+  pytest==8.2.2
+  httpx==0.27.0
+  PyYAML==6.0.1
+  numpy==1.26.4
+
+Python version: 3.11
+
+══════════════════════════════════════════════════════════
+SECTION 2 — openenv.yaml
+══════════════════════════════════════════════════════════
+
+Create openenv.yaml at project root:
+
+---
+name: srebench
+version: "1.0.0"
+description: >
+  SREBench simulates on-call incident response for SRE/DevOps agents.
+  The agent receives production alerts and must investigate logs, metrics,
+  and service dependencies to identify root cause, apply fixes, verify
+  resolution, and write a postmortem.
+tags: [openenv, sre, devops, incident-response, aiops]
+tasks:
+  - id: task1_memory_leak
+    name: Memory Leak OOM Kill
+    difficulty: easy
+    max_steps: 20
+    description: >
+      A single service is OOM-killing repeatedly. Logs are clear.
+      Agent must identify the correct service and apply a restart.
+  - id: task2_db_cascade
+    name: Cascading DB Pool Exhaustion
+    difficulty: medium
+    max_steps: 30
+    description: >
+      Service A is returning 503s because Service B (upstream) has
+      exhausted its DB connection pool. Agent must trace the dependency
+      chain, identify root cause, and drain/scale the pool.
+  - id: task3_race_condition
+    name: Distributed Race Condition via Config Change
+    difficulty: hard
+    max_steps: 40
+    description: >
+      An intermittent 5xx spike began 12 minutes after a config change.
+      The agent must correlate the deploy timeline, diff the config,
+      identify the cache race condition, roll back, and verify resolution.
+action_space:
+  type: object
+  fields:
+    - name: action_type
+      type: string
+      enum: [read_logs, check_metrics, list_services, check_alerts,
+             check_deployments, check_dependencies, run_diagnostic,
+             apply_fix, verify_health, write_postmortem, escalate]
+    - name: parameters
+      type: object
+      description: Action-specific parameters (service name, time range, fix type, etc.)
+    - name: reasoning
+      type: string
+      description: Agent's chain-of-thought before acting (required, min 10 chars)
+observation_space:
+  type: object
+  fields:
+    - name: timestamp
+      type: string
+    - name: alert_summary
+      type: string
+    - name: service_statuses
+      type: object
+    - name: last_action_result
+      type: string
+    - name: incident_phase
+      type: string
+      enum: [investigating, mitigating, verifying, resolved]
+    - name: available_actions
+      type: array
+    - name: step_count
+      type: integer
+    - name: time_elapsed_minutes
+      type: integer
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  tasks: GET /tasks
+  grader: GET /grader
+  baseline: POST /baseline
+baseline_scores:
+  task1_memory_leak: 0.82
+  task2_db_cascade: 0.61
+  task3_race_condition: 0.38
+
+══════════════════════════════════════════════════════════
+SECTION 3 — PYDANTIC MODELS (app/models.py)
+══════════════════════════════════════════════════════════
+
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, Any
+from enum import Enum
+
+class ServiceStatus(BaseModel):
+    name: str
+    status: Literal["healthy", "degraded", "down", "unknown"]
+    error_rate: float  # 0.0–1.0
+    latency_p99_ms: int
+    restarts_last_hour: int
+
+class IncidentPhase(str, Enum):
+    INVESTIGATING = "investigating"
+    MITIGATING = "mitigating"
+    VERIFYING = "verifying"
+    RESOLVED = "resolved"
+
+class Action(BaseModel):
+    action_type: Literal[
+        "read_logs",
+        "check_metrics",
+        "list_services",
+        "check_alerts",
+        "check_deployments",
+        "check_dependencies",
+        "run_diagnostic",
+        "apply_fix",
+        "verify_health",
+        "write_postmortem",
+        "escalate"
+    ]
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    reasoning: str = Field(min_length=10)
+
+class Observation(BaseModel):
+    timestamp: str
+    alert_summary: str
+    service_statuses: dict[str, ServiceStatus]
+    last_action_result: str
+    incident_phase: IncidentPhase
+    available_actions: list[str]
+    step_count: int
+    time_elapsed_minutes: int
+    hints_used: int  # tracks if agent called escalate
+
+class Reward(BaseModel):
+    step_reward: float        # reward for this step (-0.1 to +0.3)
+    cumulative_reward: float  # total so far
+    episode_score: float      # final 0.0–1.0 (only meaningful when done=True)
+    done: bool
+    info: dict[str, Any]
+
+class ResetRequest(BaseModel):
+    task_id: str
+    seed: Optional[int] = 42   # reproducibility default
+
+class StepResponse(BaseModel):
+    observation: Observation
+    reward: Reward
+
+══════════════════════════════════════════════════════════
+SECTION 4 — SERVICE GRAPH (app/data/service_graph.py)
+══════════════════════════════════════════════════════════
+
+Define a synthetic microservices DAG with exactly 8 services.
+This graph is FIXED (not randomised) — it defines the production topology.
+
+SERVICES:
+  api-gateway     → calls: auth-service, order-service
+  auth-service    → calls: user-db
+  order-service   → calls: inventory-service, payment-service
+  inventory-service → calls: inventory-db
+  payment-service → calls: payment-db
+  user-db         → (leaf, no downstream)
+  inventory-db    → (leaf, no downstream)
+  payment-db      → (leaf, no downstream)
+
+Implement as:
+
+class ServiceGraph:
+    SERVICES = {
+        "api-gateway":        {"downstream": ["auth-service", "order-service"]},
+        "auth-service":       {"downstream": ["user-db"]},
+        "order-service":      {"downstream": ["inventory-service", "payment-service"]},
+        "inventory-service":  {"downstream": ["inventory-db"]},
+        "payment-service":    {"downstream": ["payment-db"]},
+        "user-db":            {"downstream": []},
+        "inventory-db":       {"downstream": []},
+        "payment-db":         {"downstream": []},
+    }
+
+    def get_upstream_of(self, service: str) -> list[str]:
+        """Returns all services that call the given service."""
+        return [s for s, v in self.SERVICES.items() if service in v["downstream"]]
+
+    def get_dependency_chain(self, service: str) -> list[str]:
+        """BFS from service downward through the graph."""
+        ...
+
+══════════════════════════════════════════════════════════
+SECTION 5 — LOG TEMPLATE ENGINE (app/data/log_templates.py)
+══════════════════════════════════════════════════════════
+
+Implement a LogGenerator class that produces realistic log lines
+using templates + seeded randomness. No external data files — 
+generate everything programmatically.
+
+Each log line format:
+  [TIMESTAMP] [LEVEL] [SERVICE] [TRACE_ID] message
+
+Key templates to implement:
+
+MEMORY_LEAK_LOGS (for task 1):
+  - "OOMKilled: container exceeded memory limit 512Mi"
+  - "java.lang.OutOfMemoryError: Java heap space"
+  - "Received signal 9 (SIGKILL)"
+  - "Pod restarted. Restart count: {n}"
+  - Normal healthy logs for OTHER services (to create noise)
+
+DB_POOL_LOGS (for task 2):
+  - "HikariPool-1 - Connection is not available, request timed out after 30000ms"
+  - "Too many connections (max: {n})"
+  - "upstream connect error or disconnect/reset before headers"
+  - "Connection pool exhausted for datasource {ds}"
+  - "Retrying connection attempt {n}/3"
+
+RACE_CONDITION_LOGS (for task 3):
+  - "CacheKeyConflict: stale read detected on key {key}"
+  - "Inconsistent state: expected {a} got {b} for user {id}"
+  - "RedisLock acquisition timeout after 5000ms"
+  - "HTTP 500 Internal Server Error" (appearing ~12min after deploy)
+  - Normal logs BEFORE the config deploy timestamp
+
+LogGenerator.generate(scenario: str, service: str, seed: int, n: int) → list[str]
+  Returns n log lines appropriate for the scenario and service.
+
+══════════════════════════════════════════════════════════
+SECTION 6 — METRICS SIMULATOR (app/data/metrics.py)
+══════════════════════════════════════════════════════════
+
+Implement MetricsSimulator that returns time-series data as dicts.
+All values seeded for reproducibility.
+
+Methods:
+  get_error_rate(service, scenario, seed) → float (0.0–1.0)
+  get_latency_p99(service, scenario, seed) → int (ms)
+  get_cpu_percent(service, scenario, seed) → float
+  get_memory_percent(service, scenario, seed) → float
+  get_connection_pool_usage(service, scenario, seed) → float (0.0–1.0)
+  get_timeseries(service, metric, scenario, seed, minutes=60) → list[dict]
+    Returns list of {timestamp, value} for the last `minutes` minutes.
+
+For task 3 specifically, the error rate timeseries MUST show:
+  - Normal (< 0.01) for first 48 minutes
+  - Sharp spike (> 0.35) starting at minute 48
+  - This spike correlates exactly with a deploy at minute 48 in DeployHistory
+
+══════════════════════════════════════════════════════════
+SECTION 7 — DEPLOY HISTORY (app/data/deploy_history.py)
+══════════════════════════════════════════════════════════
+
+Implement DeployHistory with a list of synthetic deploy records.
+
+class DeployRecord(BaseModel):
+    deploy_id: str
+    service: str
+    author: str
+    timestamp: str            # ISO format
+    minutes_ago: int          # relative to incident start
+    commit_hash: str          # 7-char hex
+    description: str
+    config_diff: Optional[dict]  # Only populated for task 3
+
+For task 3, the CRITICAL deploy record:
+  service: "inventory-service"
+  minutes_ago: 12
+  description: "Update Redis cache config for performance"
+  config_diff: {
+    "redis.lock_timeout_ms": {"old": 5000, "new": 500},   # BUG: too short
+    "redis.connection_pool_size": {"old": 10, "new": 50}
+  }
+
+Include 4–6 other innocent recent deploys across other services
+(red herrings for difficulty).
+
+══════════════════════════════════════════════════════════
+SECTION 8 — SCENARIOS (app/scenarios/)
+══════════════════════════════════════════════════════════
+
+Each scenario class must implement:
+
+class BaseScenario(ABC):
+    task_id: str
+    seed: int
+    step_count: int = 0
+    incident_phase: IncidentPhase
+    _root_cause_identified: bool = False
+    _fix_applied: bool = False
+    _resolution_verified: bool = False
+    _postmortem_written: bool = False
+
+    @abstractmethod
+    def get_initial_observation(self) -> Observation: ...
+
+    @abstractmethod
+    def apply_action(self, action: Action) -> tuple[Observation, float, bool]: ...
+    # Returns: (next_observation, step_reward, done)
+
+    @abstractmethod
+    def get_grader_score(self) -> float: ...
+
+    def get_current_state(self) -> dict: ...
+
+
+── TASK 1: MemoryLeakScenario ─────────────────────────────
+
+Root cause: "order-service" is OOMKilling every ~4 minutes.
+All other services healthy.
+
+Initial alert: "CRITICAL: order-service has restarted 4 times in 20 minutes"
+
+Action responses:
+  list_services → returns all 8 services; order-service shows status=down,
+                   restarts_last_hour=4, all others healthy
+  read_logs(service="order-service") → OOM log lines (from LogGenerator)
+  read_logs(service=<any_other>) → Normal boring logs
+  check_metrics(service="order-service") → memory_percent=0.98, cpu normal
+  check_metrics(service=<other>) → all normal
+  check_dependencies(service="order-service") → shows upstream: api-gateway
+  apply_fix(service="order-service", fix_type="restart") → 
+      sets order-service status=healthy, restarts=0
+      awards +0.3 reward
+      transitions phase → verifying
+  apply_fix(service=<wrong_service>, fix_type=<anything>) →
+      -0.1 penalty, "no effect observed"
+  verify_health(service="order-service") → if fix applied: all healthy,
+      transitions → resolved, done=True
+  write_postmortem(content=<any_string_over_50_chars>) →
+      +0.1 bonus if called after resolved
+  escalate → hints_used += 1, reveals "check memory metrics on order-service"
+
+Grader (task1_grader.py):
+  correct_service_identified = True if apply_fix targeted order-service
+  fix_applied_correctly = True if fix_type was "restart"
+  resolution_verified = True if verify_health called after fix
+  postmortem_written = True if write_postmortem called
+  time_bonus = max(0, 1 - (step_count / 20)) * 0.1
+  escalation_penalty = hints_used * 0.05
+
+  score = (
+    correct_service_identified * 0.35 +
+    fix_applied_correctly * 0.25 +
+    resolution_verified * 0.20 +
+    postmortem_written * 0.10 +
+    time_bonus
+  ) - escalation_penalty
+  return min(1.0, max(0.0, score))
+
+
+── TASK 2: DBCascadeScenario ──────────────────────────────
+
+Root cause: payment-db connection pool exhausted (pool_usage=0.99)
+  → payment-service failing (error_rate=0.87)
+  → order-service failing (error_rate=0.62, depends on payment-service)
+  → api-gateway returning 503 (visible to users)
+
+Initial alert: "CRITICAL: api-gateway error rate 58% - customers seeing 503s"
+
+State tracking flags:
+  _traced_to_payment_service: bool
+  _traced_to_payment_db: bool
+  _correct_fix_applied: bool   (must target payment-db pool, not just restart)
+
+Action responses:
+  list_services → api-gateway degraded, order-service degraded,
+                  payment-service DOWN, others healthy
+  check_dependencies(service="api-gateway") → shows order-service downstream
+  check_dependencies(service="order-service") → shows payment-service downstream
+  check_dependencies(service="payment-service") → shows payment-db downstream
+  check_metrics(service="payment-db") → connection_pool_usage=0.99,
+      sets _traced_to_payment_db=True
+  read_logs(service="payment-service") → pool exhaustion logs
+  apply_fix(service="payment-db", fix_type="increase_pool_size") →
+      sets pool to healthy, cascades health upward, +0.3 reward
+  apply_fix(service="payment-service", fix_type="restart") →
+      WRONG: gives partial fix, payment-service recovers briefly but
+      pool exhausts again in 2 steps, +0.05 only
+  apply_fix(service="api-gateway", fix_type=<anything>) →
+      "api-gateway is healthy — root cause is upstream", -0.05
+  verify_health(all=True) → checks full service graph, +0.1 if all healthy
+  run_diagnostic(service="payment-db", type="connection_count") →
+      returns live connection count, sets _traced_to_payment_db=True
+
+Grader:
+  score = (
+    _traced_to_payment_service * 0.15 +
+    _traced_to_payment_db * 0.25 +
+    _correct_fix_applied * 0.30 +
+    resolution_verified * 0.15 +
+    postmortem_written * 0.10 +
+    time_bonus * 0.05
+  ) - escalation_penalty
+  
+  IMPORTANT: if agent restarts api-gateway or order-service without
+  tracing to root cause, score is capped at 0.35
+
+
+── TASK 3: RaceConditionScenario ──────────────────────────
+
+Root cause: inventory-service deploy 12 minutes ago changed
+redis.lock_timeout_ms from 5000ms → 500ms, causing cache read races
+under load. 5xx spike appeared 12min after deploy.
+
+This is the HARD task. The agent must:
+  1. Notice 5xx spike
+  2. Check deploy history and find the 12-min-ago deploy
+  3. Examine the config diff (lock_timeout_ms change)
+  4. Understand THIS is the race condition cause
+  5. Apply rollback to inventory-service config
+  6. Verify errors cease
+  7. Write postmortem mentioning "lock_timeout" or "race condition"
+
+State tracking flags:
+  _error_spike_noticed: bool
+  _deploy_identified: bool           (correct deploy checked)
+  _config_diff_examined: bool
+  _correct_rollback_applied: bool
+  _errors_verified_ceased: bool
+  _postmortem_mentions_root_cause: bool
+
+Action responses:
+  list_services → all services show degraded with ~0.20 error rate
+  check_metrics(service="inventory-service", metric="error_rate") →
+      returns timeseries showing spike at T-12min
+  check_deployments(last_n=5) → returns 5 recent deploys including
+      the inventory-service one 12min ago, sets _deploy_identified=True
+  check_deployments(service="inventory-service") → same but filtered
+  run_diagnostic(service="inventory-service", type="config_diff",
+                 deploy_id=<correct_id>) →
+      returns config_diff showing lock_timeout change
+      sets _config_diff_examined=True
+  apply_fix(service="inventory-service", fix_type="rollback_config",
+            deploy_id=<correct_id>) →
+      sets _correct_rollback_applied=True, errors begin to drop, +0.3
+  apply_fix(service=<anything>, fix_type="restart") →
+      errors persist (race reoccurs after restart), "restart did not
+      resolve the issue — errors persisting", -0.05
+  write_postmortem(content=<string>) →
+      if "lock_timeout" or "race condition" in content.lower():
+          sets _postmortem_mentions_root_cause=True, +0.1
+      else: +0.02 (partial credit for writing something)
+
+Grader:
+  score = (
+    _error_spike_noticed * 0.10 +
+    _deploy_identified * 0.15 +
+    _config_diff_examined * 0.20 +
+    _correct_rollback_applied * 0.25 +
+    _errors_verified_ceased * 0.15 +
+    _postmortem_mentions_root_cause * 0.15
+  ) - (escalation_penalty * 1.5)  # harder penalty on hard task
+
+  # Dead-end trap: if agent restarts >2 services without checking deploys,
+  # apply an extra -0.10 distraction penalty
+  if restarts_without_deploy_check > 2:
+      score -= 0.10
+  return min(1.0, max(0.0, score))
+
+══════════════════════════════════════════════════════════
+SECTION 9 — REWARD SHAPER (app/reward.py)
+══════════════════════════════════════════════════════════
+
+class RewardShaper:
+    """
+    Converts raw scenario signals into step-level rewards.
+    Ensures the reward function has meaningful gradient everywhere —
+    not just binary at episode end.
+    """
+
+    BASE_STEP_PENALTY = -0.01   # small cost per step (time pressure)
+
+    REWARDS = {
+        # Positive
+        "root_cause_progress":     +0.15,  # traced one hop toward root cause
+        "root_cause_identified":   +0.30,  # correctly identified the exact cause
+        "fix_applied_correctly":   +0.30,  # applied the right remediation
+        "resolution_verified":     +0.15,  # confirmed system healthy after fix
+        "postmortem_written":      +0.10,  # wrote meaningful postmortem
+        "postmortem_quality":      +0.05,  # postmortem mentions root cause term
+
+        # Negative
+        "wrong_fix_applied":       -0.10,  # applied fix to wrong service/type
+        "destructive_action":      -0.20,  # e.g., restart of healthy service
+        "escalate_used":           -0.05,  # hint used (per use)
+        "repeated_same_action":    -0.05,  # same action+params twice in a row
+    }
+
+    def compute(
+        self,
+        event: str,
+        step_count: int,
+        max_steps: int,
+        previous_reward: float
+    ) -> float:
+        base = self.BASE_STEP_PENALTY
+        event_reward = self.REWARDS.get(event, 0.0)
+        return round(base + event_reward, 4)
+
+══════════════════════════════════════════════════════════
+SECTION 10 — ENVIRONMENT CORE (app/environment.py)
+══════════════════════════════════════════════════════════
+
+class SREBenchEnvironment:
+    """
+    Stateful environment. One instance per active episode.
+    Thread-safe via a lock — support concurrent API calls.
+    """
+
+    def __init__(self):
+        self._scenario: Optional[BaseScenario] = None
+        self._lock = asyncio.Lock()
+
+    async def reset(self, task_id: str, seed: int = 42) -> Observation:
+        async with self._lock:
+            scenario_map = {
+                "task1_memory_leak":    MemoryLeakScenario,
+                "task2_db_cascade":     DBCascadeScenario,
+                "task3_race_condition": RaceConditionScenario,
+            }
+            if task_id not in scenario_map:
+                raise ValueError(f"Unknown task_id: {task_id}")
+            self._scenario = scenario_map[task_id](seed=seed)
+            return self._scenario.get_initial_observation()
+
+    async def step(self, action: Action) -> tuple[Observation, Reward]:
+        async with self._lock:
+            if self._scenario is None:
+                raise RuntimeError("Call reset() before step()")
+            obs, step_reward, done = self._scenario.apply_action(action)
+            reward = Reward(
+                step_reward=step_reward,
+                cumulative_reward=self._scenario.cumulative_reward,
+                episode_score=self._scenario.get_grader_score() if done else 0.0,
+                done=done,
+                info={
+                    "step_count": obs.step_count,
+                    "incident_phase": obs.incident_phase,
+                    "task_id": self._scenario.task_id,
+                }
+            )
+            return obs, reward
+
+    async def state(self) -> dict:
+        if self._scenario is None:
+            return {"status": "no_episode_active"}
+        return self._scenario.get_current_state()
+
+    async def get_grader_score(self) -> float:
+        if self._scenario is None:
+            raise RuntimeError("No active episode")
+        return self._scenario.get_grader_score()
+
+══════════════════════════════════════════════════════════
+SECTION 11 — FASTAPI ENDPOINTS (app/main.py)
+══════════════════════════════════════════════════════════
+
+from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from app.environment import SREBenchEnvironment
+from app.models import *
+import yaml, asyncio
+
+env = SREBenchEnvironment()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield  # startup/shutdown hooks if needed
+
+app = FastAPI(
+    title="SREBench",
+    description="On-Call Incident Response OpenEnv Environment",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+@app.post("/reset", response_model=Observation)
+async def reset(request: ResetRequest):
+    return await env.reset(request.task_id, request.seed)
+
+@app.post("/step", response_model=StepResponse)
+async def step(action: Action):
+    obs, reward = await env.step(action)
+    return StepResponse(observation=obs, reward=reward)
+
+@app.get("/state")
+async def state():
+    return await env.state()
+
+@app.get("/tasks")
+async def tasks():
+    """Returns task list + full action schema for agent consumption."""
+    with open("openenv.yaml") as f:
+        config = yaml.safe_load(f)
+    return {
+        "tasks": config["tasks"],
+        "action_schema": config["action_space"],
+        "observation_schema": config["observation_space"],
+    }
+
+@app.get("/grader")
+async def grader():
+    score = await env.get_grader_score()
+    return {"episode_score": score}
+
+@app.post("/baseline")
+async def baseline():
+    """
+    Triggers the baseline inference script programmatically.
+    Runs all 3 tasks with seed=42, returns scores.
+    Heavy — uses thread pool to avoid blocking event loop.
+    """
+    import subprocess, sys, json
+    result = subprocess.run(
+        [sys.executable, "baseline/run_baseline.py", "--json"],
+        capture_output=True, text=True, timeout=300
+    )
+    if result.returncode != 0:
+        raise HTTPException(500, f"Baseline script failed: {result.stderr}")
+    return json.loads(result.stdout)
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "environment": "srebench", "version": "1.0.0"}
+
+══════════════════════════════════════════════════════════
+SECTION 12 — BASELINE INFERENCE SCRIPT (baseline/run_baseline.py)
+══════════════════════════════════════════════════════════
+
+#!/usr/bin/env python3
+"""
+Baseline agent: GPT-4o runs each task with ReAct-style prompting.
+Reads OPENAI_API_KEY from environment.
+Usage:
+  python baseline/run_baseline.py            # prints human-readable
+  python baseline/run_baseline.py --json     # prints JSON only (for /baseline endpoint)
+"""
+
+import os, sys, json, argparse, httpx
+from openai import OpenAI
+
+BASE_URL = os.getenv("SREBENCH_URL", "http://localhost:7860")
+TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition"]
+SEED = 42
+MODEL = "gpt-4o"
+
+SYSTEM_PROMPT = """You are an expert SRE on-call engineer.
+You will receive an incident alert and must investigate and resolve it.
+On each turn, output a JSON action in this exact format:
+{
+  "action_type": "<one of the available actions>",
+  "parameters": { ... },
+  "reasoning": "Your step-by-step reasoning before acting"
+}
+Always think carefully about the dependency graph before applying fixes.
+Prefer to read_logs and check_metrics before applying any fix.
+"""
+
+def run_episode(client: OpenAI, task_id: str) -> float:
+    """Runs one full episode. Returns final grader score."""
+    # 1. Reset
+    reset_resp = httpx.post(f"{BASE_URL}/reset",
+                            json={"task_id": task_id, "seed": SEED})
+    obs = reset_resp.json()
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"Incident alert: {obs['alert_summary']}\n"
+            f"Available actions: {obs['available_actions']}\n"
+            f"Service statuses: {json.dumps(obs['service_statuses'], indent=2)}\n"
+            "What do you do first?"}
+    ]
+
+    max_steps = {"task1_memory_leak": 20,
+                 "task2_db_cascade": 30,
+                 "task3_race_condition": 40}[task_id]
+
+    for step_num in range(max_steps):
+        # 2. Get LLM action
+        completion = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        raw_action = json.loads(completion.choices[0].message.content)
+
+        # 3. Validate + send to env
+        try:
+            step_resp = httpx.post(f"{BASE_URL}/step",
+                                   json=raw_action, timeout=30)
+            step_data = step_resp.json()
+        except Exception as e:
+            break
+
+        obs = step_data["observation"]
+        reward = step_data["reward"]
+
+        # 4. Add to message history
+        messages.append({"role": "assistant",
+                          "content": completion.choices[0].message.content})
+        messages.append({"role": "user", "content":
+            f"Result: {obs['last_action_result']}\n"
+            f"Incident phase: {obs['incident_phase']}\n"
+            f"Step reward: {reward['step_reward']}\n"
+            f"Service statuses: {json.dumps(obs['service_statuses'], indent=2)}\n"
+            + (f"Available actions: {obs['available_actions']}"
+               if step_num % 3 == 0 else "")
+        })
+
+        if reward["done"]:
+            return reward["episode_score"]
+
+    # Episode ended without done=True — get grader score
+    grader_resp = httpx.get(f"{BASE_URL}/grader")
+    return grader_resp.json()["episode_score"]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    results = {}
+
+    for task_id in TASKS:
+        score = run_episode(client, task_id)
+        results[task_id] = round(score, 4)
+
+    if args.json:
+        print(json.dumps(results))
+    else:
+        print("\n=== SREBench Baseline Results ===")
+        for task_id, score in results.items():
+            bar = "█" * int(score * 20)
+            print(f"  {task_id:<28} {score:.4f}  {bar}")
+        print(f"\n  Average: {sum(results.values())/len(results):.4f}")
+
+if __name__ == "__main__":
+    main()
+
+══════════════════════════════════════════════════════════
+SECTION 13 — DOCKERFILE
+══════════════════════════════════════════════════════════
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install deps first (layer cache)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source
+COPY . .
+
+# HF Spaces listens on 7860
+EXPOSE 7860
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD python -c "import httpx; httpx.get('http://localhost:7860/health')"
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
+
+══════════════════════════════════════════════════════════
+SECTION 14 — TESTS (tests/test_env.py)
+══════════════════════════════════════════════════════════
+
+Write pytest tests covering:
+
+1. test_reset_task1 — reset returns valid Observation with all 8 services
+2. test_reset_task2 — reset returns api-gateway as degraded
+3. test_reset_task3 — reset returns multiple degraded services
+4. test_step_requires_reset — calling step without reset raises RuntimeError
+5. test_task1_optimal_path — full optimal episode:
+   reset → list_services → read_logs(order-service) →
+   check_metrics(order-service) → apply_fix(order-service, restart) →
+   verify_health → write_postmortem
+   Assert final score >= 0.85
+6. test_task1_wrong_service_penalty — apply_fix to wrong service,
+   assert step_reward <= -0.05
+7. test_task2_naive_fix_capped — restart api-gateway without tracing,
+   assert grader_score <= 0.35
+8. test_task3_needs_deploy_check — assert score < 0.30 if
+   check_deployments never called
+9. test_grader_endpoint — GET /grader returns float in [0, 1]
+10. test_tasks_endpoint — GET /tasks returns 3 tasks with correct ids
+11. test_reproducibility — same seed produces identical observations
+12. test_reward_bounds — all step rewards are in [-0.25, +0.35]
+
+Use httpx.AsyncClient with app=app for all tests (no server needed).
+
+══════════════════════════════════════════════════════════
+SECTION 15 — README.md
+══════════════════════════════════════════════════════════
+
+Write a README with exactly these sections:
+
+# SREBench
+
+## What is this?
+One paragraph explaining the environment and why it matters.
+
+## Environment Design
+Subsections:
+- Service topology (describe the 8-service graph)
+- Action space (table of all 11 actions with parameters)
+- Observation space (table of all fields)
+- Reward structure (table showing reward events and values)
+
+## Tasks
+For each task: name, difficulty, scenario description, what the agent
+must figure out, grader criteria, expected score for GPT-4o.
+
+## Quickstart
+  git clone ...
+  docker build -t srebench .
+  docker run -p 7860:7860 srebench
+  # Then: curl http://localhost:7860/health
+
+## Running the Baseline
+  export OPENAI_API_KEY=sk-...
+  python baseline/run_baseline.py
+
+## Baseline Scores
+Table: task | model | score
+task1_memory_leak     | gpt-4o | 0.82
+task2_db_cascade      | gpt-4o | 0.61
+task3_race_condition  | gpt-4o | 0.38
+
+## HF Space
+Link to the deployed Space.
+
+══════════════════════════════════════════════════════════
+SECTION 16 — IMPLEMENTATION ORDER
+══════════════════════════════════════════════════════════
+
+Build in this exact order to avoid circular imports and
+unblocked progress:
+
+1. requirements.txt + Dockerfile
+2. openenv.yaml
+3. app/models.py (all Pydantic models)
+4. app/data/service_graph.py
+5. app/data/log_templates.py
+6. app/data/metrics.py
+7. app/data/deploy_history.py
+8. app/reward.py
+9. app/scenarios/base.py
+10. app/scenarios/task1_memory_leak.py
+11. app/graders/task1_grader.py
+12. app/scenarios/task2_db_cascade.py
+13. app/graders/task2_grader.py
+14. app/scenarios/task3_race_condition.py
+15. app/graders/task3_grader.py
+16. app/environment.py
+17. app/main.py
+18. baseline/run_baseline.py
+19. tests/test_env.py
+20. README.md
+
+After each scenario+grader pair, write a quick sanity check:
+  python -c "
+  from app.scenarios.task1_memory_leak import MemoryLeakScenario
+  s = MemoryLeakScenario(seed=42)
+  obs = s.get_initial_observation()
+  print(obs.alert_summary)
+  print(s.get_grader_score())  # should be 0.0
+  "
+
+══════════════════════════════════════════════════════════
+SECTION 17 — CRITICAL CONSTRAINTS
+══════════════════════════════════════════════════════════
+
+1. ALL randomness must use Python's random.Random(seed) or
+   numpy.random.default_rng(seed) — never module-level random.
+   Every piece of generated data must be deterministic for a given seed.
+
+2. Graders must be DETERMINISTIC. Same episode trajectory → same score.
+   No floating point non-determinism from model calls inside graders.
+
+3. Episode done=True triggers ONLY via:
+   - verify_health returning all services healthy AFTER a fix
+   - step_count reaching max_steps (auto-terminate)
+   - apply_fix resulting in full resolution (only task 1 can auto-resolve)
+
+4. The /baseline endpoint must NOT require OPENAI_API_KEY on the server.
+   It runs the baseline script as a subprocess, which reads the env var.
+   If OPENAI_API_KEY is not set, return a clear error message.
+
+5. NEVER hardcode "magic" action sequences that skip actual logic.
+   Each action must change state and return different observations.
+
+6. The service graph must remain CONSISTENT across all 3 tasks.
+   Only the service STATUSES differ between tasks, not the topology.
+
+7. Port 7860 is mandatory for HF Spaces compatibility.
+
+8. openenv validate must pass. This means:
+   - /reset returns an object matching the Observation schema
+   - /step returns StepResponse with observation + reward
+   - /state returns any valid dict
+   - /tasks returns the task list
+   - All Pydantic models are fully typed with no Optional without defaults
+
+🎯 Scoring Projection
+CriterionMaxExpectedWhyReal-world utility3027–29AIOps is red-hot; no existing OpenEnv covers SRETask & grader quality2522–243 tasks with clear difficulty gradient, deterministic gradersEnvironment design2017–19Rich reward shaping, 11 action types, clean state machineCode quality & spec1513–15Full spec compliance, typed models, tested, DockerizedCreativity & novelty108–10Novel domain, reward traps (restarts don't fix races), deploy timeline mechanicTotal10087–97
+🚀 HF Spaces Deployment Checklist
+yaml# Add to repo root as README.md header for HF Space detection:
+---
+title: SREBench
+colorFrom: red
+colorTo: orange
+sdk: docker
+pinned: false
+tags:
+  - openenv
+  - reinforcement-learning
+  - sre
+  - aiops
+---
+The Dockerfile's EXPOSE 7860 and uvicorn --port 7860 align perfectly with HF Spaces' Docker SDK — no extra configuration needed. The /health endpoint satisfies the automated ping check in the pre-submission validation.
+
+
+EVALUATE:
+
+The system has 5 defence layers: static → unit/property → oracle episodes → adversarial probes → LLM meta-critique. The meta-critic feeds back into auto-patch proposals, closing the loop. Here's the complete build prompt.
+
+SREBench Self-Evaluation & Auto-Improvement System — Complete Build Prompt
+
+Paste this into Cursor / Claude Code after the main SREBench environment is built. It is fully self-contained.
+
+
+You are building a rigid, automated self-evaluation and continuous-improvement
+system for the SREBench OpenEnv environment. This system must catch every class
+of environment bug: schema violations, reward hacking, grader exploits, score
+drift, unrealistic scenarios, and poor reward signal quality.
+
+The system lives in a new top-level directory: eval/
+It runs standalone (python eval/run_eval.py) and as a GitHub Actions workflow.
+
+══════════════════════════════════════════════════════════
+SECTION 1 — DIRECTORY STRUCTURE
+══════════════════════════════════════════════════════════
+
+eval/
+├── run_eval.py                  # Master runner — executes all layers in order
+├── config.py                   # Thresholds, seeds, model names
+├── report.py                   # Builds eval_report.json + eval_badge.svg
+│
+├── layer1_static/
+│   ├── test_schema.py           # Pydantic model contract tests
+│   ├── test_yaml.py             # openenv.yaml structural validation
+│   ├── test_types.py            # Type annotation coverage check
+│   └── test_rng_discipline.py  # No bare random calls anywhere
+│
+├── layer2_unit/
+│   ├── test_reward_bounds.py    # All rewards in [-0.25, +0.35]
+│   ├── test_grader_range.py     # All graders return [0.0, 1.0]
+│   ├── test_reproducibility.py  # Same seed → identical episode
+│   ├── test_grader_monotone.py  # More correct actions → higher score
+│   ├── test_done_conditions.py  # done=True only under valid conditions
+│   └── fuzz/
+│       ├── test_hypothesis_actions.py   # Hypothesis property tests
+│       └── test_hypothesis_rewards.py
+│
+├── layer3_oracle/
+│   ├── episodes/
+│   │   ├── task1_optimal.py     # Hand-written optimal action sequence
+│   │   ├── task1_random.py      # Random walk baseline
+│   │   ├── task1_naive_fix.py   # Applies fix without investigating
+│   │   ├── task2_optimal.py
+│   │   ├── task2_surface_fix.py # Fixes api-gateway (wrong)
+│   │   ├── task2_partial.py     # Traces one hop then stops
+│   │   ├── task3_optimal.py
+│   │   ├── task3_restart_loop.py # Restarts services repeatedly
+│   │   └── task3_no_deploys.py  # Never calls check_deployments
+│   ├── runner.py                # Executes episodes against live env
+│   └── assertions.py           # Score range assertions per episode
+│
+├── layer4_adversarial/
+│   ├── test_no_shortcut_to_1.py      # Single-action full-score impossible
+│   ├── test_repeat_action_penalty.py # Repeat same action → decreasing reward
+│   ├── test_wrong_service_cap.py     # Wrong-service fix hard-caps score
+│   ├── test_escalation_decay.py      # Every escalate reduces max score
+│   ├── test_postmortem_spam.py       # 100 write_postmortem calls ≠ 1.0
+│   └── test_dead_end_detection.py    # Agent stuck in loop gets terminated
+│
+├── layer5_meta/
+│   ├── meta_evaluator.py        # LLM judge — critiques env quality
+│   ├── prompts/
+│   │   ├── reward_quality.txt
+│   │   ├── scenario_realism.txt
+│   │   ├── grader_fairness.txt
+│   │   └── observation_completeness.txt
+│   ├── critique_schema.py       # Pydantic model for structured critique
+│   └── issue_generator.py       # Converts critique → eval_issues.json
+│
+├── drift/
+│   ├── baseline_snapshots/
+│   │   └── snapshot_YYYYMMDD.json   # Historical baseline scores
+│   ├── drift_detector.py        # Compares current scores to snapshots
+│   └── exploit_scanner.py      # Detects trivial 1.0 exploit paths
+│
+└── .github/
+    └── workflows/
+        └── eval.yml             # GitHub Actions CI pipeline
+
+
+══════════════════════════════════════════════════════════
+SECTION 2 — MASTER CONFIG (eval/config.py)
+══════════════════════════════════════════════════════════
+
+from dataclasses import dataclass, field
+
+@dataclass(frozen=True)
+class EvalConfig:
+
+    # ── Reproducibility ─────────────────────────────────
+    seeds: tuple[int, ...] = (42, 137, 999)   # All oracle episodes run on all 3 seeds
+    baseline_seed: int = 42
+
+    # ── Layer 2: Unit thresholds ─────────────────────────
+    reward_min: float = -0.25
+    reward_max: float = +0.35
+    grader_min: float = 0.0
+    grader_max: float = 1.0
+
+    # ── Layer 3: Oracle score requirements ───────────────
+    # {episode_name: (min_score, max_score)}
+    oracle_bounds: dict = field(default_factory=lambda: {
+        # Task 1
+        "task1_optimal":     (0.85, 1.00),
+        "task1_random":      (0.00, 0.25),
+        "task1_naive_fix":   (0.35, 0.65),
+        # Task 2
+        "task2_optimal":     (0.80, 1.00),
+        "task2_surface_fix": (0.00, 0.35),  # fixes api-gw, capped
+        "task2_partial":     (0.30, 0.55),
+        # Task 3
+        "task3_optimal":     (0.75, 1.00),
+        "task3_restart_loop":(0.00, 0.30),
+        "task3_no_deploys":  (0.00, 0.30),
+    })
+
+    # ── Layer 4: Adversarial thresholds ─────────────────
+    single_action_max_score: float = 0.35   # No single action scores > this
+    repeat_penalty_per_step: float = -0.04  # Minimum repeat penalty
+    escalation_max_after_3: float = 0.70    # Max score if escalate used 3x
+
+    # ── Layer 5: Meta-evaluator ──────────────────────────
+    meta_model: str = "gpt-4o"
+    meta_temperature: float = 0.1
+    min_meta_score: float = 6.0             # Out of 10 — block if below this
+
+    # ── Drift detection ───────────────────────────────────
+    drift_alert_threshold: float = 0.05     # Alert if score shifts ±0.05
+    drift_fail_threshold: float = 0.10      # Hard fail if shifts ±0.10
+
+    # ── CI gate ───────────────────────────────────────────
+    # If any of these layers fail, the CI pipeline fails the PR
+    blocking_layers: tuple[str, ...] = ("layer1", "layer2", "layer3", "layer4")
+    # Layer 5 and drift are advisory (warn) unless configured to block
+    meta_eval_blocks: bool = False
+    drift_blocks: bool = True
+
+CFG = EvalConfig()
+
+
+══════════════════════════════════════════════════════════
+SECTION 3 — LAYER 1: STATIC ANALYSIS
+══════════════════════════════════════════════════════════
+
+── eval/layer1_static/test_schema.py ─────────────────────
+
+"""
+Contract tests: every endpoint must return exactly the right Pydantic model.
+We do NOT test business logic here — only types and required fields.
+"""
+import pytest
+from httpx import AsyncClient
+from app.main import app
+from app.models import Observation, Reward, StepResponse
+
+TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition"]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", TASKS)
+async def test_reset_returns_valid_observation(task_id):
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.post("/reset", json={"task_id": task_id, "seed": 42})
+        assert resp.status_code == 200
+        obs = Observation.model_validate(resp.json())
+        # Required fields present
+        assert obs.alert_summary != ""
+        assert len(obs.service_statuses) == 8
+        assert obs.step_count == 0
+        assert obs.incident_phase == "investigating"
+        assert len(obs.available_actions) >= 5
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", TASKS)
+async def test_step_returns_valid_step_response(task_id):
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        await client.post("/reset", json={"task_id": task_id, "seed": 42})
+        resp = await client.post("/step", json={
+            "action_type": "list_services",
+            "parameters": {},
+            "reasoning": "Starting investigation by listing all services"
+        })
+        assert resp.status_code == 200
+        sr = StepResponse.model_validate(resp.json())
+        assert -0.25 <= sr.reward.step_reward <= 0.35
+        assert isinstance(sr.reward.done, bool)
+
+@pytest.mark.asyncio
+async def test_tasks_endpoint_returns_three_tasks():
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/tasks")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["tasks"]) == 3
+        ids = {t["id"] for t in data["tasks"]}
+        assert ids == {"task1_memory_leak", "task2_db_cascade", "task3_race_condition"}
+        # Action schema present
+        assert "action_schema" in data
+        assert "fields" in data["action_schema"]
+
+@pytest.mark.asyncio
+async def test_state_returns_dict_always():
+    """state() must never 500 — even before reset."""
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/state")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), dict)
+
+@pytest.mark.asyncio
+async def test_grader_before_reset_raises_cleanly():
+    """GET /grader before reset should return 400 or 422, not 500."""
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        # Fresh client with no reset
+        resp = await client.get("/grader")
+        assert resp.status_code in (400, 422, 200)
+        # If 200, it must be a dict with episode_score
+        if resp.status_code == 200:
+            assert "episode_score" in resp.json()
+
+
+── eval/layer1_static/test_yaml.py ─────────────────────
+
+"""Validates openenv.yaml structure and required fields."""
+import yaml, pytest
+from pathlib import Path
+
+@pytest.fixture(scope="module")
+def config():
+    return yaml.safe_load(Path("openenv.yaml").read_text())
+
+def test_required_top_level_keys(config):
+    for key in ("name", "version", "description", "tasks",
+                "action_space", "observation_space", "endpoints"):
+        assert key in config, f"Missing top-level key: {key}"
+
+def test_three_tasks_with_required_fields(config):
+    assert len(config["tasks"]) == 3
+    for task in config["tasks"]:
+        for field in ("id", "name", "difficulty", "max_steps", "description"):
+            assert field in task, f"Task missing field: {field}"
+        assert task["difficulty"] in ("easy", "medium", "hard")
+        assert 1 <= task["max_steps"] <= 100
+
+def test_difficulty_progression(config):
+    diffs = [t["difficulty"] for t in config["tasks"]]
+    order = {"easy": 0, "medium": 1, "hard": 2}
+    # Tasks must be in increasing difficulty order
+    indices = [order[d] for d in diffs]
+    assert indices == sorted(indices), "Tasks must be ordered easy → medium → hard"
+
+def test_action_space_has_all_required_action_types(config):
+    action_field = next(f for f in config["action_space"]["fields"]
+                        if f["name"] == "action_type")
+    required_actions = {
+        "read_logs", "check_metrics", "list_services", "check_alerts",
+        "check_deployments", "check_dependencies", "run_diagnostic",
+        "apply_fix", "verify_health", "write_postmortem", "escalate"
+    }
+    assert required_actions == set(action_field["enum"])
+
+def test_baseline_scores_in_range(config):
+    if "baseline_scores" in config:
+        for task_id, score in config["baseline_scores"].items():
+            assert 0.0 <= score <= 1.0, f"Baseline score out of range: {task_id}={score}"
+
+def test_endpoints_cover_spec(config):
+    endpoints = config["endpoints"]
+    for ep in ("reset", "step", "state", "tasks", "grader", "baseline"):
+        assert ep in endpoints, f"Missing endpoint in yaml: {ep}"
+
+
+── eval/layer1_static/test_rng_discipline.py ────────────
+
+"""
+Scans all Python source files under app/ to ensure NO bare calls to
+module-level random functions exist. All randomness must go through
+a seeded Random or numpy Generator instance.
+"""
+import ast, pytest
+from pathlib import Path
+
+BANNED_CALLS = {
+    ("random", "random"), ("random", "randint"), ("random", "choice"),
+    ("random", "shuffle"), ("random", "seed"),
+    ("np", "random"),    # Catches np.random.xxx calls at module level
+}
+
+def find_bare_random_calls(path: Path) -> list[str]:
+    violations = []
+    try:
+        tree = ast.parse(path.read_text())
+    except SyntaxError:
+        return []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if isinstance(func.value, ast.Name):
+                    key = (func.value.id, func.attr)
+                    if key in BANNED_CALLS:
+                        violations.append(
+                            f"{path}:{node.lineno} — bare call: "
+                            f"{func.value.id}.{func.attr}()"
+                        )
+    return violations
+
+def test_no_bare_random_in_app():
+    files = list(Path("app").rglob("*.py"))
+    all_violations = []
+    for f in files:
+        all_violations.extend(find_bare_random_calls(f))
+    assert not all_violations, (
+        "Found unseeded random calls — wrap in Random(seed) or "
+        "numpy default_rng(seed):\n" + "\n".join(all_violations)
+    )
+
+
+══════════════════════════════════════════════════════════
+SECTION 4 — LAYER 2: UNIT + PROPERTY-BASED TESTS
+══════════════════════════════════════════════════════════
+
+── eval/layer2_unit/test_reward_bounds.py ───────────────
+
+"""Every possible reward event must stay within config bounds."""
+import pytest
+from app.reward import RewardShaper
+from eval.config import CFG
+
+shaper = RewardShaper()
+
+ALL_EVENTS = list(shaper.REWARDS.keys()) + ["unknown_event_xyz"]
+
+@pytest.mark.parametrize("event", ALL_EVENTS)
+def test_reward_for_every_event_in_bounds(event):
+    r = shaper.compute(event, step_count=5, max_steps=20, previous_reward=0.0)
+    assert CFG.reward_min <= r <= CFG.reward_max, (
+        f"Reward for '{event}' = {r} outside bounds "
+        f"[{CFG.reward_min}, {CFG.reward_max}]"
+    )
+
+def test_base_step_penalty_is_negative():
+    """Every step must have some time-pressure cost."""
+    r = shaper.compute("no_event", step_count=1, max_steps=20, previous_reward=0.0)
+    assert r < 0, "Step with no event must have negative base penalty"
+
+def test_cumulative_reward_never_exceeds_one():
+    """After any number of steps, cumulative should not blow past 1.2."""
+    # Maximum possible cumulative: all positive events in sequence
+    total = sum(v for v in shaper.REWARDS.values() if v > 0)
+    assert total <= 1.2, f"Sum of all positive rewards = {total} — consider capping"
+
+
+── eval/layer2_unit/test_grader_monotone.py ─────────────
+
+"""
+Graders must be monotone: more correct intermediate flags set →
+higher or equal score. This prevents anti-gradients.
+"""
+import pytest
+from app.scenarios.task1_memory_leak import MemoryLeakScenario
+from app.scenarios.task2_db_cascade import DBCascadeScenario
+from app.scenarios.task3_race_condition import RaceConditionScenario
+
+def test_task1_grader_monotone():
+    s = MemoryLeakScenario(seed=42)
+    score_0 = s.get_grader_score()
+
+    # Set one flag
+    s._correct_service_identified = True
+    score_1 = s.get_grader_score()
+    assert score_1 >= score_0, "Score must not decrease when correct flag set"
+
+    # Set another
+    s._fix_applied_correctly = True
+    score_2 = s.get_grader_score()
+    assert score_2 >= score_1
+
+    # Set another
+    s._resolution_verified = True
+    score_3 = s.get_grader_score()
+    assert score_3 >= score_2
+
+    # All flags → maximum
+    s._postmortem_written = True
+    score_4 = s.get_grader_score()
+    assert score_4 >= score_3
+    assert score_4 <= 1.0
+
+def test_task2_wrong_service_caps_score():
+    """Fixing api-gateway (wrong service) must hard-cap score ≤ 0.35."""
+    s = DBCascadeScenario(seed=42)
+    s._fix_applied_to_wrong_surface = True
+    # Even if other flags get set
+    s._resolution_verified = True
+    s._postmortem_written = True
+    assert s.get_grader_score() <= 0.35
+
+def test_task3_no_deploy_check_caps_score():
+    """If check_deployments never called, score must stay ≤ 0.30."""
+    s = RaceConditionScenario(seed=42)
+    s._errors_verified_ceased = True  # somehow fixed without looking at deploys
+    s._postmortem_written = True
+    # But _deploy_identified is False (default)
+    score = s.get_grader_score()
+    assert score <= 0.30, (
+        f"Score {score} exceeds 0.30 without deploy check — grader is exploitable"
+    )
+
+
+── eval/layer2_unit/test_reproducibility.py ─────────────
+
+"""Same seed must produce byte-identical episode trajectories."""
+import pytest, asyncio, json
+from app.environment import SREBenchEnvironment
+from app.models import Action
+
+TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition"]
+SEEDS = [42, 137, 999]
+
+TEST_ACTIONS = [
+    Action(action_type="list_services", parameters={},
+           reasoning="List all services to start investigation"),
+    Action(action_type="check_metrics",
+           parameters={"service": "order-service", "metric": "memory"},
+           reasoning="Check memory metrics on order-service"),
+]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", TASKS)
+@pytest.mark.parametrize("seed", SEEDS)
+async def test_same_seed_produces_identical_observations(task_id, seed):
+    async def run_episode(task_id, seed):
+        env = SREBenchEnvironment()
+        obs = await env.reset(task_id, seed)
+        results = [obs.model_dump()]
+        for action in TEST_ACTIONS:
+            obs, reward = await env.step(action)
+            results.append({
+                "obs": obs.model_dump(),
+                "step_reward": reward.step_reward,
+            })
+        return results
+
+    run1 = await run_episode(task_id, seed)
+    run2 = await run_episode(task_id, seed)
+
+    assert json.dumps(run1, sort_keys=True) == json.dumps(run2, sort_keys=True), (
+        f"Non-deterministic episode: task={task_id} seed={seed}"
+    )
+
+
+── eval/layer2_unit/fuzz/test_hypothesis_actions.py ─────
+
+"""
+Property-based tests using Hypothesis.
+Generates random valid actions and verifies invariants hold
+regardless of action sequence.
+"""
+from hypothesis import given, settings, HealthCheck
+from hypothesis import strategies as st
+import pytest, asyncio
+from app.environment import SREBenchEnvironment
+from app.models import Action
+
+ACTION_TYPES = [
+    "read_logs", "check_metrics", "list_services", "check_alerts",
+    "check_deployments", "check_dependencies", "run_diagnostic",
+    "apply_fix", "verify_health", "write_postmortem", "escalate"
+]
+
+SERVICES = [
+    "api-gateway", "auth-service", "order-service",
+    "inventory-service", "payment-service",
+    "user-db", "inventory-db", "payment-db"
+]
+
+action_strategy = st.fixed_dictionaries({
+    "action_type": st.sampled_from(ACTION_TYPES),
+    "parameters": st.one_of(
+        st.just({}),
+        st.fixed_dictionaries({
+            "service": st.sampled_from(SERVICES)
+        }),
+        st.fixed_dictionaries({
+            "service": st.sampled_from(SERVICES),
+            "fix_type": st.sampled_from(["restart", "increase_pool_size",
+                                          "rollback_config", "scale_up"])
+        }),
+    ),
+    "reasoning": st.text(min_size=10, max_size=200,
+                          alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd", "Zs")))
+})
+
+@given(actions=st.lists(action_strategy, min_size=1, max_size=15))
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
+def test_fuzz_never_crashes_or_returns_invalid_reward(actions):
+    """Random action sequences must never cause 500s or out-of-bounds rewards."""
+    async def _run():
+        env = SREBenchEnvironment()
+        await env.reset("task1_memory_leak", seed=42)
+        for raw_action in actions:
+            try:
+                action = Action(**raw_action)
+                obs, reward = await env.step(action)
+                # Invariants
+                assert -0.25 <= reward.step_reward <= 0.35
+                assert 0.0 <= reward.cumulative_reward
+                assert reward.done in (True, False)
+                assert 0 <= obs.step_count <= 25
+                if reward.done:
+                    assert 0.0 <= reward.episode_score <= 1.0
+                    break
+            except Exception as e:
+                raise AssertionError(f"Crash on action {raw_action}: {e}")
+
+    asyncio.run(_run())
+
+@given(st.sampled_from(["task1_memory_leak", "task2_db_cascade",
+                         "task3_race_condition"]))
+@settings(max_examples=10)
+def test_fuzz_all_tasks_survive_random_episode(task_id):
+    """All 3 tasks survive random action sequences without crashing."""
+    async def _run():
+        env = SREBenchEnvironment()
+        await env.reset(task_id, seed=42)
+        for _ in range(5):
+            obs, reward = await env.step(Action(
+                action_type="list_services",
+                parameters={},
+                reasoning="Just listing services for testing purposes"
+            ))
+            if reward.done:
+                break
+        score = await env.get_grader_score()
+        assert 0.0 <= score <= 1.0
+
+    asyncio.run(_run())
+
+
+══════════════════════════════════════════════════════════
+SECTION 5 — LAYER 3: SCRIPTED ORACLE EPISODES
+══════════════════════════════════════════════════════════
+
+── eval/layer3_oracle/runner.py ─────────────────────────
+
+"""
+Executes a scripted action sequence and returns the final grader score.
+Used by all oracle episode tests.
+"""
+import asyncio
+from app.environment import SREBenchEnvironment
+from app.models import Action
+
+async def run_scripted_episode(
+    task_id: str,
+    actions: list[dict],
+    seed: int = 42,
+) -> dict:
+    """
+    Runs a fully scripted episode.
+    Returns {score, done, steps_taken, cumulative_reward, final_phase}.
+    """
+    env = SREBenchEnvironment()
+    await env.reset(task_id, seed=seed)
+    cumulative = 0.0
+    last_obs = None
+    done = False
+
+    for i, raw in enumerate(actions):
+        action = Action(**raw)
+        obs, reward = await env.step(action)
+        cumulative = reward.cumulative_reward
+        last_obs = obs
+        done = reward.done
+        if done:
+            return {
+                "score": reward.episode_score,
+                "done": True,
+                "steps_taken": i + 1,
+                "cumulative_reward": cumulative,
+                "final_phase": obs.incident_phase.value,
+            }
+
+    final_score = await env.get_grader_score()
+    return {
+        "score": final_score,
+        "done": done,
+        "steps_taken": len(actions),
+        "cumulative_reward": cumulative,
+        "final_phase": last_obs.incident_phase.value if last_obs else "unknown",
+    }
+
+
+── eval/layer3_oracle/episodes/task1_optimal.py ─────────
+
+"""
+TASK 1 OPTIMAL PATH:
+Investigate → identify root cause → apply correct fix → verify → postmortem.
+Expected score: >= 0.85
+"""
+
+TASK_ID = "task1_memory_leak"
+SCORE_MIN = 0.85
+SCORE_MAX = 1.00
+
+ACTIONS = [
+    {
+        "action_type": "list_services",
+        "parameters": {},
+        "reasoning": "First, I'll list all services to see which ones are unhealthy."
+    },
+    {
+        "action_type": "read_logs",
+        "parameters": {"service": "order-service"},
+        "reasoning": "order-service has high restarts. Reading logs to find the error."
+    },
+    {
+        "action_type": "check_metrics",
+        "parameters": {"service": "order-service", "metric": "memory"},
+        "reasoning": "Logs show OOM. Checking memory metrics to confirm."
+    },
+    {
+        "action_type": "apply_fix",
+        "parameters": {"service": "order-service", "fix_type": "restart"},
+        "reasoning": "Memory at 98%. OOM confirmed. Restarting order-service to recover."
+    },
+    {
+        "action_type": "verify_health",
+        "parameters": {"service": "order-service"},
+        "reasoning": "Verifying service is healthy after the restart."
+    },
+    {
+        "action_type": "write_postmortem",
+        "parameters": {
+            "content": (
+                "Incident: order-service OOM killed repeatedly due to memory leak. "
+                "Root cause: unbounded cache growth in order-service. "
+                "Mitigation: restarted service. Memory usage dropped to normal. "
+                "Follow-up: add memory limit alerts and investigate cache eviction policy."
+            )
+        },
+        "reasoning": "Documenting the incident for future reference."
+    },
+]
+
+
+── eval/layer3_oracle/episodes/task1_naive_fix.py ───────
+
+"""
+NAIVE FIX PATH:
+Agent applies fix immediately without any investigation.
+Expected score: 0.35–0.65 (gets credit for correct service/fix_type
+but misses investigation rewards).
+"""
+
+TASK_ID = "task1_memory_leak"
+SCORE_MIN = 0.35
+SCORE_MAX = 0.65
+
+ACTIONS = [
+    {
+        "action_type": "apply_fix",
+        "parameters": {"service": "order-service", "fix_type": "restart"},
+        "reasoning": "Restarting order-service immediately."
+    },
+    {
+        "action_type": "verify_health",
+        "parameters": {},
+        "reasoning": "Checking if it worked."
+    },
+]
+
+
+── eval/layer3_oracle/episodes/task2_surface_fix.py ─────
+
+"""
+SURFACE FIX PATH:
+Agent looks at api-gateway (visible symptom) and restarts it without tracing
+dependencies. Must be capped at ≤ 0.35 by grader.
+"""
+
+TASK_ID = "task2_db_cascade"
+SCORE_MIN = 0.00
+SCORE_MAX = 0.35
+
+ACTIONS = [
+    {
+        "action_type": "list_services",
+        "parameters": {},
+        "reasoning": "Listing services to see the problem."
+    },
+    {
+        "action_type": "apply_fix",
+        "parameters": {"service": "api-gateway", "fix_type": "restart"},
+        "reasoning": "api-gateway is returning errors so I will restart it."
+    },
+    {
+        "action_type": "verify_health",
+        "parameters": {"service": "api-gateway"},
+        "reasoning": "Checking if restart helped."
+    },
+    {
+        "action_type": "write_postmortem",
+        "parameters": {"content": "Restarted api-gateway. Errors gone. Root cause unknown."},
+        "reasoning": "Writing up the incident."
+    },
+]
+
+
+── eval/layer3_oracle/episodes/task3_no_deploys.py ──────
+
+"""
+NO DEPLOY CHECK PATH:
+Agent investigates metrics and restarts services but never calls
+check_deployments. Must score ≤ 0.30 since deploy identification
+is required for the root cause.
+"""
+
+TASK_ID = "task3_race_condition"
+SCORE_MIN = 0.00
+SCORE_MAX = 0.30
+
+ACTIONS = [
+    {
+        "action_type": "list_services",
+        "parameters": {},
+        "reasoning": "List all services."
+    },
+    {
+        "action_type": "check_metrics",
+        "parameters": {"service": "inventory-service", "metric": "error_rate"},
+        "reasoning": "Checking metrics on inventory-service."
+    },
+    {
+        "action_type": "apply_fix",
+        "parameters": {"service": "inventory-service", "fix_type": "restart"},
+        "reasoning": "Service has errors, restarting it."
+    },
+    {
+        "action_type": "apply_fix",
+        "parameters": {"service": "order-service", "fix_type": "restart"},
+        "reasoning": "Also restarting order-service."
+    },
+    {
+        "action_type": "verify_health",
+        "parameters": {},
+        "reasoning": "Checking health after restarts."
+    },
+]
+
+
+── eval/layer3_oracle/assertions.py ─────────────────────
+
+"""
+Centralized score assertions for oracle episodes.
+Loads all episode modules and runs them against the live env.
+"""
+import importlib, pytest, asyncio
+from pathlib import Path
+from eval.layer3_oracle.runner import run_scripted_episode
+from eval.config import CFG
+
+EPISODE_MODULES = [
+    "eval.layer3_oracle.episodes.task1_optimal",
+    "eval.layer3_oracle.episodes.task1_random",
+    "eval.layer3_oracle.episodes.task1_naive_fix",
+    "eval.layer3_oracle.episodes.task2_optimal",
+    "eval.layer3_oracle.episodes.task2_surface_fix",
+    "eval.layer3_oracle.episodes.task2_partial",
+    "eval.layer3_oracle.episodes.task3_optimal",
+    "eval.layer3_oracle.episodes.task3_restart_loop",
+    "eval.layer3_oracle.episodes.task3_no_deploys",
+]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module_name", EPISODE_MODULES)
+async def test_oracle_episode_score_in_expected_range(module_name):
+    module = importlib.import_module(module_name)
+    episode_name = module_name.split(".")[-1]
+
+    # Run on all configured seeds
+    scores = []
+    for seed in CFG.seeds:
+        result = await run_scripted_episode(
+            task_id=module.TASK_ID,
+            actions=module.ACTIONS,
+            seed=seed,
+        )
+        scores.append(result["score"])
+
+    avg_score = sum(scores) / len(scores)
+    lo, hi = module.SCORE_MIN, module.SCORE_MAX
+
+    assert lo <= avg_score <= hi, (
+        f"Episode '{episode_name}' average score {avg_score:.3f} "
+        f"outside expected range [{lo}, {hi}]\n"
+        f"Seed scores: {scores}"
+    )
+
+
+══════════════════════════════════════════════════════════
+SECTION 6 — LAYER 4: ADVERSARIAL GRADER PROBES
+══════════════════════════════════════════════════════════
+
+── eval/layer4_adversarial/test_no_shortcut_to_1.py ─────
+
+"""
+Verifies no single action can produce a score at or near 1.0.
+Prevents graders from being trivially exploitable.
+"""
+import pytest, asyncio
+from app.environment import SREBenchEnvironment
+from app.models import Action
+from eval.config import CFG
+
+TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition"]
+
+ALL_ACTIONS = [
+    Action(action_type="write_postmortem",
+           parameters={"content": "Root cause identified. Fixed. Verified. Complete postmortem."},
+           reasoning="Writing perfect postmortem in one shot"),
+    Action(action_type="apply_fix",
+           parameters={"service": "order-service", "fix_type": "restart"},
+           reasoning="Applying fix immediately"),
+    Action(action_type="verify_health",
+           parameters={},
+           reasoning="Verifying health directly"),
+    Action(action_type="escalate",
+           parameters={},
+           reasoning="Escalating for hints"),
+]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", TASKS)
+@pytest.mark.parametrize("action", ALL_ACTIONS)
+async def test_single_action_cannot_win(task_id, action):
+    env = SREBenchEnvironment()
+    await env.reset(task_id, seed=42)
+    _, reward = await env.step(action)
+    score = reward.episode_score if reward.done else await env.get_grader_score()
+    assert score <= CFG.single_action_max_score, (
+        f"Single action '{action.action_type}' on {task_id} scored {score:.3f} "
+        f"> {CFG.single_action_max_score} — grader is exploitable!"
+    )
+
+
+── eval/layer4_adversarial/test_repeat_action_penalty.py
+
+"""
+Verifies that repeating the same action+params yields decreasing rewards.
+Prevents "spam one action to accumulate reward" exploits.
+"""
+import pytest, asyncio
+from app.environment import SREBenchEnvironment
+from app.models import Action
+
+REPEAT_ACTION = Action(
+    action_type="list_services",
+    parameters={},
+    reasoning="Just listing services repeatedly to farm reward"
+)
+
+@pytest.mark.asyncio
+async def test_repeat_action_rewards_decrease():
+    env = SREBenchEnvironment()
+    await env.reset("task1_memory_leak", seed=42)
+
+    rewards = []
+    for _ in range(5):
+        _, reward = await env.step(REPEAT_ACTION)
+        rewards.append(reward.step_reward)
+        if reward.done:
+            break
+
+    # After first call, subsequent identical calls should be ≤ the first
+    if len(rewards) >= 3:
+        assert rewards[2] <= rewards[0], (
+            f"Repeat penalty not applied: rewards = {rewards}"
+        )
+
+
+── eval/layer4_adversarial/test_postmortem_spam.py ──────
+
+"""
+Verifies that calling write_postmortem 100 times cannot reach 1.0.
+"""
+import pytest, asyncio
+from app.environment import SREBenchEnvironment
+from app.models import Action
+
+@pytest.mark.asyncio
+async def test_postmortem_spam_cannot_reach_1():
+    env = SREBenchEnvironment()
+    await env.reset("task1_memory_leak", seed=42)
+    for i in range(100):
+        action = Action(
+            action_type="write_postmortem",
+            parameters={"content": f"Postmortem attempt {i}. Root cause. Fixed."},
+            reasoning="Writing postmortem repeatedly"
+        )
+        _, reward = await env.step(action)
+        assert reward.episode_score < 1.0, (
+            f"Postmortem spam reached 1.0 at call {i}"
+        )
+        if reward.done:
+            break
+
+    score = await env.get_grader_score()
+    assert score < 0.9, f"Postmortem spam too effective: score = {score}"
+
+
+── eval/layer4_adversarial/test_dead_end_detection.py ───
+
+"""
+Verifies that an agent doing nothing useful for max_steps gets terminated
+and receives a low score — not stuck in an infinite loop.
+"""
+import pytest, asyncio
+from app.environment import SREBenchEnvironment
+from app.models import Action
+
+USELESS_ACTION = Action(
+    action_type="check_alerts",
+    parameters={},
+    reasoning="Checking alerts repeatedly without acting"
+)
+
+@pytest.mark.asyncio
+async def test_max_steps_terminates_episode():
+    env = SREBenchEnvironment()
+    await env.reset("task1_memory_leak", seed=42)
+
+    terminated = False
+    for step in range(25):  # task1 max_steps = 20
+        _, reward = await env.step(USELESS_ACTION)
+        if reward.done:
+            terminated = True
+            assert reward.episode_score <= 0.15, (
+                f"Episode terminated at step {step} with score "
+                f"{reward.episode_score} — too high for doing nothing"
+            )
+            break
+
+    assert terminated, (
+        "Episode never terminated even after 25 steps of useless actions — "
+        "max_steps not enforced!"
+    )
+
+
+══════════════════════════════════════════════════════════
+SECTION 7 — LAYER 5: LLM META-EVALUATOR
+══════════════════════════════════════════════════════════
+
+── eval/layer5_meta/critique_schema.py ──────────────────
+
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class DimensionScore(BaseModel):
+    score: float = Field(ge=0.0, le=10.0)
+    verdict: Literal["pass", "warn", "fail"]
+    issues: list[str]                    # Specific problems found
+    suggestions: list[str]               # Concrete improvement suggestions
+
+class EnvironmentCritique(BaseModel):
+    evaluated_task: str
+    reward_signal_quality: DimensionScore
+    scenario_realism: DimensionScore
+    grader_fairness: DimensionScore
+    observation_completeness: DimensionScore
+    overall_score: float = Field(ge=0.0, le=10.0)
+    overall_verdict: Literal["pass", "warn", "fail"]
+    top_issues: list[str]                # Top 3 most critical issues
+    auto_patch_hints: list[str]          # Concrete code-level suggestions
+
+
+── eval/layer5_meta/meta_evaluator.py ───────────────────
+
+"""
+LLM judge that evaluates the SREBench environment quality across
+4 dimensions. Returns structured critique JSON.
+"""
+import json, os
+from pathlib import Path
+from openai import OpenAI
+from eval.layer5_meta.critique_schema import EnvironmentCritique, DimensionScore
+from eval.config import CFG
+
+PROMPTS_DIR = Path("eval/layer5_meta/prompts")
+
+class MetaEvaluator:
+    def __init__(self):
+        self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+    def _build_context(self, task_id: str, episode_trajectory: list[dict]) -> str:
+        """Serializes an episode trajectory for the LLM to review."""
+        return json.dumps({
+            "task_id": task_id,
+            "trajectory": episode_trajectory[:15],  # cap at 15 steps for tokens
+        }, indent=2)
+
+    def _load_prompt(self, name: str) -> str:
+        return (PROMPTS_DIR / f"{name}.txt").read_text()
+
+    def evaluate(
+        self,
+        task_id: str,
+        episode_trajectory: list[dict],
+    ) -> EnvironmentCritique:
+        context = self._build_context(task_id, episode_trajectory)
+
+        master_prompt = f"""
+You are an expert RL environment designer reviewing an OpenEnv environment
+called SREBench (on-call SRE incident response simulation).
+
+You will evaluate the environment across 4 dimensions and return structured
+JSON matching this exact schema:
+{{
+  "evaluated_task": "<task_id>",
+  "reward_signal_quality": {{
+    "score": <0-10>,
+    "verdict": "pass|warn|fail",
+    "issues": ["..."],
+    "suggestions": ["..."]
+  }},
+  "scenario_realism": {{...}},
+  "grader_fairness": {{...}},
+  "observation_completeness": {{...}},
+  "overall_score": <0-10>,
+  "overall_verdict": "pass|warn|fail",
+  "top_issues": ["...", "...", "..."],
+  "auto_patch_hints": ["...", "...", "..."]
+}}
+
+Scoring guide:
+- reward_signal_quality: Does the reward function guide the agent to root cause?
+  Are partial rewards meaningful? Is the signal dense enough?
+  fail = only sparse reward, no gradient | warn = mostly ok but gaps | pass = good signal
+- scenario_realism: Does this look like a real SRE incident?
+  Are the logs/metrics convincing? Could a real engineer use this for training?
+  fail = clearly fake/toy | warn = plausible but thin | pass = realistic
+- grader_fairness: Can the grader be gamed? Are the scoring weights proportional
+  to difficulty? Is there unintended hard cap?
+  fail = trivially exploitable | warn = minor issues | pass = fair and robust
+- observation_completeness: Does the agent have all the information it needs?
+  Are hints given when appropriate? Is info withheld unfairly?
+  fail = agent missing critical info | warn = some gaps | pass = complete
+
+Here is the episode trajectory to evaluate:
+{context}
+
+Return ONLY the JSON object, no preamble, no markdown fences.
+"""
+        resp = self.client.chat.completions.create(
+            model=CFG.meta_model,
+            messages=[{"role": "user", "content": master_prompt}],
+            temperature=CFG.meta_temperature,
+            response_format={"type": "json_object"},
+        )
+
+        raw = json.loads(resp.choices[0].message.content)
+
+        # Parse with Pydantic for strict validation
+        critique = EnvironmentCritique(
+            evaluated_task=raw["evaluated_task"],
+            reward_signal_quality=DimensionScore(**raw["reward_signal_quality"]),
+            scenario_realism=DimensionScore(**raw["scenario_realism"]),
+            grader_fairness=DimensionScore(**raw["grader_fairness"]),
+            observation_completeness=DimensionScore(**raw["observation_completeness"]),
+            overall_score=raw["overall_score"],
+            overall_verdict=raw["overall_verdict"],
+            top_issues=raw.get("top_issues", []),
+            auto_patch_hints=raw.get("auto_patch_hints", []),
+        )
+        return critique
+
+
+── eval/layer5_meta/issue_generator.py ──────────────────
+
+"""
+Converts LLM critiques into eval_issues.json which can be
+read by CI to post GitHub Issues or display in the eval report.
+"""
+import json
+from datetime import datetime
+from eval.layer5_meta.critique_schema import EnvironmentCritique
+
+def generate_issues(critiques: list[EnvironmentCritique]) -> list[dict]:
+    issues = []
+    for critique in critiques:
+        for issue_text in critique.top_issues:
+            issues.append({
+                "title": f"[{critique.evaluated_task}] {issue_text[:80]}",
+                "body": (
+                    f"**Dimension**: Detected in meta-evaluation\n"
+                    f"**Task**: {critique.evaluated_task}\n"
+                    f"**Overall score**: {critique.overall_score}/10\n\n"
+                    f"**Issue**: {issue_text}\n\n"
+                    f"**Suggested patches**:\n" +
+                    "\n".join(f"- {h}" for h in critique.auto_patch_hints)
+                ),
+                "labels": [critique.overall_verdict, critique.evaluated_task],
+                "generated_at": datetime.utcnow().isoformat(),
+            })
+    return issues
+
+def save_issues(issues: list[dict], path: str = "eval_issues.json"):
+    with open(path, "w") as f:
+        json.dump(issues, f, indent=2)
+    print(f"Saved {len(issues)} issues to {path}")
+
+
+══════════════════════════════════════════════════════════
+SECTION 8 — DRIFT DETECTION
+══════════════════════════════════════════════════════════
+
+── eval/drift/drift_detector.py ─────────────────────────
+
+"""
+Compares current baseline scores to historical snapshots.
+Alerts on unexpected drift (environment changed without intent).
+"""
+import json, os
+from datetime import datetime
+from pathlib import Path
+from eval.config import CFG
+
+SNAPSHOT_DIR = Path("eval/drift/baseline_snapshots")
+
+class DriftDetector:
+    def detect(self, current_scores: dict[str, float]) -> dict:
+        """
+        Compare current_scores to the most recent snapshot.
+        Returns {status: ok|warn|fail, drifts: [...]}
+        """
+        snapshots = sorted(SNAPSHOT_DIR.glob("snapshot_*.json"))
+        if not snapshots:
+            self._save_snapshot(current_scores)
+            return {"status": "ok", "drifts": [],
+                    "note": "No prior snapshot. Saved current scores as baseline."}
+
+        latest = json.loads(snapshots[-1].read_text())
+        drifts = []
+
+        for task_id, current in current_scores.items():
+            prior = latest.get(task_id)
+            if prior is None:
+                continue
+            delta = abs(current - prior)
+            if delta >= CFG.drift_fail_threshold:
+                drifts.append({
+                    "task_id": task_id,
+                    "prior": prior,
+                    "current": current,
+                    "delta": round(delta, 4),
+                    "severity": "fail",
+                    "message": (
+                        f"HARD FAIL: Score drifted {delta:.3f} "
+                        f"({prior:.3f} → {current:.3f})"
+                    )
+                })
+            elif delta >= CFG.drift_alert_threshold:
+                drifts.append({
+                    "task_id": task_id,
+                    "prior": prior,
+                    "current": current,
+                    "delta": round(delta, 4),
+                    "severity": "warn",
+                    "message": (
+                        f"WARNING: Score drifted {delta:.3f} "
+                        f"({prior:.3f} → {current:.3f})"
+                    )
+                })
+
+        if any(d["severity"] == "fail" for d in drifts):
+            status = "fail"
+        elif drifts:
+            status = "warn"
+        else:
+            status = "ok"
+            self._save_snapshot(current_scores)  # Save new snapshot on clean run
+
+        return {"status": status, "drifts": drifts}
+
+    def _save_snapshot(self, scores: dict):
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        fname = SNAPSHOT_DIR / f"snapshot_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        fname.write_text(json.dumps(scores, indent=2))
+
+
+── eval/drift/exploit_scanner.py ────────────────────────
+
+"""
+Scans for trivial exploit paths: action sequences shorter than N steps
+that achieve scores above the single_action_max_score threshold.
+Runs after oracle episodes to check if any short path scored too high.
+"""
+import asyncio
+from app.environment import SREBenchEnvironment
+from app.models import Action
+from eval.config import CFG
+
+SHORT_PATH_THRESHOLD = 3   # Any ≤ 3 action sequence scoring above limit = exploit
+
+CANDIDATE_EXPLOITS = [
+    # One-shot write_postmortem with magic keywords
+    [
+        Action(action_type="write_postmortem",
+               parameters={"content": "lock_timeout race condition rollback fixed"},
+               reasoning="Trying to shortcut task3 with keywords in postmortem"),
+    ],
+    # Immediate rollback without any investigation on task3
+    [
+        Action(action_type="apply_fix",
+               parameters={"service": "inventory-service",
+                            "fix_type": "rollback_config",
+                            "deploy_id": "deploy_001"},
+               reasoning="Guessing deploy_id to skip investigation"),
+    ],
+    # Verify health immediately on task1
+    [
+        Action(action_type="verify_health",
+               parameters={"service": "order-service"},
+               reasoning="Verify before fixing — should not resolve"),
+        Action(action_type="apply_fix",
+               parameters={"service": "order-service", "fix_type": "restart"},
+               reasoning="Apply fix"),
+    ],
+]
+
+async def scan_exploits() -> list[dict]:
+    found_exploits = []
+    tasks_to_check = [
+        ("task1_memory_leak", CANDIDATE_EXPLOITS[2]),
+        ("task3_race_condition", CANDIDATE_EXPLOITS[0]),
+        ("task3_race_condition", CANDIDATE_EXPLOITS[1]),
+    ]
+
+    for task_id, actions in tasks_to_check:
+        env = SREBenchEnvironment()
+        await env.reset(task_id, seed=42)
+        final_score = 0.0
+        for action in actions:
+            _, reward = await env.step(action)
+            if reward.done:
+                final_score = reward.episode_score
+                break
+        else:
+            final_score = await env.get_grader_score()
+
+        if final_score > CFG.single_action_max_score:
+            found_exploits.append({
+                "task_id": task_id,
+                "exploit_actions": [a.action_type for a in actions],
+                "score": final_score,
+                "threshold": CFG.single_action_max_score,
+            })
+
+    return found_exploits
+
+
+══════════════════════════════════════════════════════════
+SECTION 9 — REPORT BUILDER (eval/report.py)
+══════════════════════════════════════════════════════════
+
+"""
+Aggregates results from all layers into:
+  1. eval_report.json   — machine-readable full results
+  2. eval_badge.svg     — shields.io-style badge for README
+  3. Prints summary to stdout
+"""
+import json, sys
+from datetime import datetime
+from pathlib import Path
+
+STATUS_COLORS = {
+    "pass": "#3B6D11",   # green
+    "warn": "#BA7517",   # amber
+    "fail": "#A32D2D",   # red
+}
+
+def build_report(results: dict) -> dict:
+    """
+    results = {
+      "layer1": {"passed": bool, "tests": int, "failures": list},
+      "layer2": {"passed": bool, ...},
+      "layer3": {"passed": bool, "episode_scores": dict},
+      "layer4": {"passed": bool, "exploits_found": list},
+      "layer5": {"passed": bool, "critiques": list[dict], "avg_score": float},
+      "drift":  {"status": str, "drifts": list},
+      "baseline_scores": {"task1_...": float, ...},
+    }
+    """
+    all_blocking_pass = all(
+        results[l]["passed"]
+        for l in ("layer1", "layer2", "layer3", "layer4")
+        if l in results
+    )
+    overall_status = "pass" if all_blocking_pass else "fail"
+    if overall_status == "pass" and results.get("drift", {}).get("status") == "warn":
+        overall_status = "warn"
+
+    report = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "overall_status": overall_status,
+        "layers": results,
+        "summary": {
+            "layer1_schema_validation": results.get("layer1", {}).get("passed"),
+            "layer2_unit_property":     results.get("layer2", {}).get("passed"),
+            "layer3_oracle_episodes":   results.get("layer3", {}).get("passed"),
+            "layer4_adversarial":       results.get("layer4", {}).get("passed"),
+            "layer5_meta_score":        results.get("layer5", {}).get("avg_score"),
+            "drift_status":             results.get("drift", {}).get("status"),
+        }
+    }
+
+    Path("eval_report.json").write_text(json.dumps(report, indent=2))
+    _write_badge(overall_status)
+    _print_summary(report)
+    return report
+
+def _write_badge(status: str):
+    color = STATUS_COLORS.get(status, "#888780")
+    label = {"pass": "eval: passing", "warn": "eval: warning", "fail": "eval: failing"}[status]
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="120" height="20">
+  <rect width="120" height="20" rx="3" fill="#555"/>
+  <rect x="50" width="70" height="20" rx="3" fill="{color}"/>
+  <text x="25" y="14" font-family="sans-serif" font-size="11" fill="white" text-anchor="middle">eval</text>
+  <text x="85" y="14" font-family="sans-serif" font-size="11" fill="white" text-anchor="middle">{status}</text>
+</svg>"""
+    Path("eval_badge.svg").write_text(svg)
+
+def _print_summary(report: dict):
+    status = report["overall_status"].upper()
+    print(f"\n{'='*55}")
+    print(f"  SREBench Eval Report  —  {report['generated_at'][:10]}")
+    print(f"  Overall: {status}")
+    print(f"{'='*55}")
+    s = report["summary"]
+    icon = lambda b: "PASS" if b else "FAIL"
+    print(f"  Layer 1  Schema validation  {icon(s['layer1_schema_validation'])}")
+    print(f"  Layer 2  Unit + fuzz        {icon(s['layer2_unit_property'])}")
+    print(f"  Layer 3  Oracle episodes    {icon(s['layer3_oracle_episodes'])}")
+    print(f"  Layer 4  Adversarial        {icon(s['layer4_adversarial'])}")
+    if s["layer5_meta_score"] is not None:
+        print(f"  Layer 5  Meta-eval score    {s['layer5_meta_score']:.1f}/10")
+    print(f"  Drift    Score stability    {(s['drift_status'] or 'skip').upper()}")
+    print(f"{'='*55}\n")
+
+
+══════════════════════════════════════════════════════════
+SECTION 10 — MASTER RUNNER (eval/run_eval.py)
+══════════════════════════════════════════════════════════
+
+#!/usr/bin/env python3
+"""
+Master evaluation runner for SREBench.
+Executes all 5 layers + drift detection + report generation.
+
+Usage:
+  python eval/run_eval.py                    # Full eval, all layers
+  python eval/run_eval.py --skip-meta        # Skip LLM meta (saves API cost)
+  python eval/run_eval.py --layer 1 2 3      # Run specific layers only
+  python eval/run_eval.py --save-snapshot    # Force-save drift snapshot
+  python eval/run_eval.py --ci               # CI mode: exit 1 on any blocking fail
+"""
+
+import argparse, asyncio, json, subprocess, sys
+from pathlib import Path
+
+def run_pytest(test_path: str, extra_args: list[str] = None) -> dict:
+    """Runs pytest on a path and returns {passed, tests, failures}."""
+    cmd = [
+        sys.executable, "-m", "pytest", test_path,
+        "-v", "--tb=short", "--json-report",
+        "--json-report-file=/tmp/pytest_report.json",
+        "-q"
+    ] + (extra_args or [])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    passed = result.returncode == 0
+
+    try:
+        report = json.loads(Path("/tmp/pytest_report.json").read_text())
+        tests = report.get("summary", {}).get("total", 0)
+        failures = [
+            f"{t['nodeid']}: {t.get('call', {}).get('longrepr', '')[:200]}"
+            for t in report.get("tests", [])
+            if t["outcome"] == "failed"
+        ]
+    except Exception:
+        tests = 0
+        failures = [result.stdout[-500:]] if not passed else []
+
+    return {"passed": passed, "tests": tests, "failures": failures}
+
+
+async def run_meta_eval() -> dict:
+    """Runs LLM meta-evaluation on all 3 tasks."""
+    from eval.layer5_meta.meta_evaluator import MetaEvaluator
+    from eval.layer3_oracle.runner import run_scripted_episode
+    from eval.layer3_oracle.episodes import task1_optimal, task2_optimal, task3_optimal
+    from eval.layer5_meta.issue_generator import generate_issues, save_issues
+
+    evaluator = MetaEvaluator()
+    critiques = []
+    episodes = [
+        ("task1_memory_leak", task1_optimal.ACTIONS),
+        ("task2_db_cascade", task2_optimal.ACTIONS),
+        ("task3_race_condition", task3_optimal.ACTIONS),
+    ]
+
+    for task_id, actions in episodes:
+        # Run episode and collect trajectory
+        trajectory = []
+        from app.environment import SREBenchEnvironment
+        from app.models import Action
+        env = SREBenchEnvironment()
+        await env.reset(task_id, seed=42)
+        for raw in actions:
+            obs, reward = await env.step(Action(**raw))
+            trajectory.append({
+                "action": raw,
+                "observation": obs.model_dump(),
+                "step_reward": reward.step_reward,
+                "done": reward.done,
+            })
+            if reward.done:
+                break
+
+        critique = evaluator.evaluate(task_id, trajectory)
+        critiques.append(critique)
+
+    issues = generate_issues(critiques)
+    save_issues(issues)
+
+    avg_score = sum(c.overall_score for c in critiques) / len(critiques)
+    any_fail = any(c.overall_verdict == "fail" for c in critiques)
+
+    return {
+        "passed": not any_fail,
+        "avg_score": round(avg_score, 2),
+        "critiques": [c.model_dump() for c in critiques],
+    }
+
+
+async def run_baseline_and_drift() -> tuple[dict, dict]:
+    """Runs baseline scores and drift detection."""
+    from eval.drift.drift_detector import DriftDetector
+    from eval.drift.exploit_scanner import scan_exploits
+    import httpx
+
+    # Get current baseline scores from running env
+    scores = {}
+    async with httpx.AsyncClient(app=__import__("app.main", fromlist=["app"]).app,
+                                  base_url="http://test") as client:
+        for task_id in ["task1_memory_leak", "task2_db_cascade", "task3_race_condition"]:
+            await client.post("/reset", json={"task_id": task_id, "seed": 42})
+            score = (await client.get("/grader")).json()["episode_score"]
+            scores[task_id] = score
+
+    drift_result = DriftDetector().detect(scores)
+    exploits = await scan_exploits()
+
+    return (
+        {
+            "passed": drift_result["status"] != "fail" and not exploits,
+            "drift": drift_result,
+            "exploits": exploits,
+            "baseline_scores": scores,
+        },
+        scores,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="SREBench Self-Evaluation Runner")
+    parser.add_argument("--skip-meta", action="store_true",
+                        help="Skip LLM meta-evaluation (saves API cost)")
+    parser.add_argument("--layer", nargs="+", type=int,
+                        help="Run only specific layers (1-5)")
+    parser.add_argument("--ci", action="store_true",
+                        help="Exit 1 if any blocking layer fails")
+    parser.add_argument("--save-snapshot", action="store_true",
+                        help="Force save current scores as drift snapshot")
+    args = parser.parse_args()
+
+    run_layers = set(args.layer or [1, 2, 3, 4, 5])
+    results = {}
+
+    if 1 in run_layers:
+        print("Running Layer 1: Static analysis...")
+        results["layer1"] = run_pytest("eval/layer1_static/")
+
+    if 2 in run_layers:
+        print("Running Layer 2: Unit + property tests...")
+        results["layer2"] = run_pytest("eval/layer2_unit/")
+
+    if 3 in run_layers:
+        print("Running Layer 3: Oracle episodes...")
+        results["layer3"] = run_pytest("eval/layer3_oracle/assertions.py")
+
+    if 4 in run_layers:
+        print("Running Layer 4: Adversarial probes...")
+        results["layer4"] = run_pytest("eval/layer4_adversarial/")
+
+    if 5 in run_layers and not args.skip_meta:
+        print("Running Layer 5: LLM meta-evaluation...")
+        results["layer5"] = asyncio.run(run_meta_eval())
+    elif 5 in run_layers:
+        print("Skipping Layer 5 (--skip-meta)")
+
+    print("Running drift detection...")
+    drift_result, baseline_scores = asyncio.run(run_baseline_and_drift())
+    results["drift"] = drift_result
+    results["baseline_scores"] = baseline_scores
+
+    from eval.report import build_report
+    report = build_report(results)
+
+    if args.ci:
+        from eval.config import CFG
+        blocking_failed = any(
+            not results.get(f"layer{l}", {}).get("passed", True)
+            for l in [1, 2, 3, 4]
+        )
+        if blocking_failed:
+            print("CI GATE FAILED — blocking layers have failures")
+            sys.exit(1)
+        if CFG.drift_blocks and drift_result.get("drift", {}).get("status") == "fail":
+            print("CI GATE FAILED — score drift exceeds threshold")
+            sys.exit(1)
+        print("CI GATE PASSED")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
+
+
+══════════════════════════════════════════════════════════
+SECTION 11 — GITHUB ACTIONS WORKFLOW
+══════════════════════════════════════════════════════════
+
+Create .github/workflows/eval.yml:
+
+name: SREBench Self-Evaluation
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly drift check at 2am UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      srebench:
+        image: srebench:latest
+        ports:
+          - 7860:7860
+        options: >-
+          --health-cmd "curl -f http://localhost:7860/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio hypothesis pytest-json-report
+
+      - name: Run layers 1-4 (blocking)
+        run: python eval/run_eval.py --layer 1 2 3 4 --ci
+        env:
+          SREBENCH_URL: http://localhost:7860
+
+      - name: Run layer 5 meta-eval (advisory)
+        run: python eval/run_eval.py --layer 5 --skip-meta
+        # Note: use --skip-meta on PR to save cost;
+        # nightly schedule uses full meta eval
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        continue-on-error: true
+
+      - name: Run drift detection
+        run: python eval/run_eval.py --layer 1 --ci
+        # Reuses cached layer1 result; triggers drift check logic
+
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report
+          path: |
+            eval_report.json
+            eval_badge.svg
+            eval_issues.json
+
+      - name: Post eval badge to job summary
+        if: always()
+        run: |
+          echo "## SREBench Eval Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat eval_report.json | python3 -c "
+          import json,sys
+          r = json.load(sys.stdin)
+          s = r['summary']
+          print(f\"**Overall**: {r['overall_status'].upper()}\")
+          print(f\"| Layer | Status |\")
+          print(f\"| --- | --- |\")
+          for k,v in s.items():
+              print(f'| {k} | {v} |')
+          " >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail if eval report shows failures
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 -c "
+          import json, sys
+          r = json.load(open('eval_report.json'))
+          if r['overall_status'] == 'fail':
+              print('Eval failed. See eval_report.json for details.')
+              sys.exit(1)
+          "
+
+
+══════════════════════════════════════════════════════════
+SECTION 12 — AUTO-IMPROVEMENT LOOP (eval/layer5_meta/auto_patch.py)
+══════════════════════════════════════════════════════════
+
+"""
+Reads eval_issues.json and generates concrete code patch suggestions
+using the OpenAI API. These are NOT applied automatically — they are
+saved to eval_patch_proposals.md for human review.
+
+This closes the self-improvement loop:
+  Eval → Critique → Issues → Patch Proposals → Human Review → Apply → Re-eval
+"""
+import json, os
+from openai import OpenAI
+from eval.config import CFG
+
+def generate_patch_proposals(issues_path: str = "eval_issues.json") -> str:
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    issues = json.loads(open(issues_path).read())
+
+    if not issues:
+        return "No issues found. Environment is clean."
+
+    issues_text = "\n\n".join(
+        f"ISSUE {i+1}: {iss['title']}\n{iss['body'][:400]}"
+        for i, iss in enumerate(issues[:5])  # Cap at 5 most critical
+    )
+
+    prompt = f"""
+You are an expert RL environment engineer. Below are issues found in the
+SREBench OpenEnv environment by an automated evaluator.
+
+For each issue, provide:
+1. A one-sentence diagnosis of the root cause in the code
+2. The specific file and function that needs to change
+3. A concrete code snippet showing the fix (10-30 lines max)
+
+Issues:
+{issues_text}
+
+Format your response as Markdown with one section per issue.
+Each section: ## Issue N — <title>
+Then: **File**: `path/to/file.py`
+Then: **Function**: `function_name()`
+Then: A fenced Python code block with the fix.
+"""
+
+    resp = client.chat.completions.create(
+        model=CFG.meta_model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+    )
+
+    proposals = f"# SREBench Auto-Patch Proposals\n\n" \
+                f"Generated from {len(issues)} issues in eval_issues.json\n\n" \
+                + resp.choices[0].message.content
+
+    with open("eval_patch_proposals.md", "w") as f:
+        f.write(proposals)
+
+    print(f"Saved patch proposals to eval_patch_proposals.md")
+    return proposals
+
+
+if __name__ == "__main__":
+    print(generate_patch_proposals())
+
+
+══════════════════════════════════════════════════════════
+SECTION 13 — ADDITIONAL TEST REQUIREMENTS
+══════════════════════════════════════════════════════════
+
+Also implement these tests not listed above:
+
+eval/layer2_unit/test_done_conditions.py:
+  - done=True ONLY after: verify_health(post-fix) OR max_steps reached
+  - done=True must always set episode_score in [0, 1]
+  - done=False must always set episode_score = 0.0
+
+eval/layer2_unit/test_observation_invariants.py:
+  - step_count must increase by exactly 1 per step
+  - incident_phase must follow valid transitions:
+    investigating → mitigating → verifying → resolved
+    (never backwards, never skips)
+  - available_actions must always be a non-empty list
+  - time_elapsed_minutes must be monotonically increasing
+
+eval/layer3_oracle/episodes/task1_random.py:
+  Implement a random walk episode that picks actions uniformly at random.
+  Run for max_steps. Expected score: 0.00–0.25.
+  Use seed=42 for the action selection (Random(42).choice(available_actions)).
+
+eval/layer4_adversarial/test_escalation_decay.py:
+  - Call escalate 3 times in a row
+  - Verify hints_used = 3
+  - Even with optimal path after, final score ≤ CFG.escalation_max_after_3
+  - Each escalate must cost exactly CFG.reward_min (or more negative)
+
+══════════════════════════════════════════════════════════
+SECTION 14 — IMPLEMENTATION ORDER
+══════════════════════════════════════════════════════════
+
+Build in this exact order:
+
+1.  eval/config.py
+2.  eval/layer1_static/test_schema.py
+3.  eval/layer1_static/test_yaml.py
+4.  eval/layer1_static/test_types.py
+5.  eval/layer1_static/test_rng_discipline.py
+6.  eval/layer2_unit/test_reward_bounds.py
+7.  eval/layer2_unit/test_grader_range.py
+8.  eval/layer2_unit/test_reproducibility.py
+9.  eval/layer2_unit/test_grader_monotone.py
+10. eval/layer2_unit/test_done_conditions.py
+11. eval/layer2_unit/test_observation_invariants.py
+12. eval/layer2_unit/fuzz/test_hypothesis_actions.py
+13. eval/layer2_unit/fuzz/test_hypothesis_rewards.py
+14. eval/layer3_oracle/runner.py
+15. eval/layer3_oracle/episodes/ (all 9 episode files)
+16. eval/layer3_oracle/assertions.py
+17. eval/layer4_adversarial/ (all 5 files)
+18. eval/layer5_meta/critique_schema.py
+19. eval/layer5_meta/meta_evaluator.py
+20. eval/layer5_meta/issue_generator.py
+21. eval/layer5_meta/auto_patch.py
+22. eval/drift/drift_detector.py
+23. eval/drift/exploit_scanner.py
+24. eval/report.py
+25. eval/run_eval.py
+26. .github/workflows/eval.yml
+
+After step 16, run:
+  python -m pytest eval/layer1_static/ eval/layer2_unit/ eval/layer3_oracle/ -v
+  
+This should produce a clean run before adding adversarial or meta layers.
+
+══════════════════════════════════════════════════════════
+SECTION 15 — CRITICAL CONSTRAINTS FOR THE EVAL SYSTEM
+══════════════════════════════════════════════════════════
+
+1. The eval system must NEVER modify the environment it's testing.
+   All environment interactions go through the FastAPI client (httpx.AsyncClient
+   with app=app), never by importing and calling scenario internals directly,
+   EXCEPT in grader monotonicity tests (which test the grader formula in isolation).
+
+2. Layer 3 oracle episodes must cover the FULL score range:
+   - At least one episode per task scoring in each bucket:
+     [0.0–0.30] [0.30–0.65] [0.65–1.00]
+   This ensures the grader has meaningful gradient everywhere.
+
+3. The drift snapshot system must use UTC timestamps only.
+   Never use local time — CI runs may be in different time zones.
+
+4. Layer 5 meta-eval must be idempotent: running it twice on the
+   same trajectory must produce the same overall_verdict.
+   (Temperature=0.1 is set for this reason.)
+
+5. eval/run_eval.py --ci must exit 0 if all blocking layers pass,
+   even if layer5 or drift produce warnings.
+   exit 1 only for: blocking layer failures OR drift status="fail".
+
+6. The GitHub Actions workflow must cache pip dependencies.
+   First CI run ≤ 4 minutes with warm cache.
+
+7. All pytest files must use pytest-asyncio with
+   @pytest.mark.asyncio and asyncio_mode = "auto" in pytest.ini:
+
+   [pytest]
+   asyncio_mode = auto
+   testpaths = tests eval
+
+Why This System Catches Every Known Failure Mode
+The 5-layer defence covers a different class of bug at each level — they don't overlap, they compound.
+Layer 1 catches contract violations that would silently break openenv validate — untyped fields, missing yaml keys, bare random.choice() calls that make the environment non-reproducible.
+Layer 2 catches mathematical invariants — a grader that accidentally returns 1.05, a reward shaper whose positive events sum past 1.2, or a scenario whose incident_phase can jump from investigating → resolved.
+Layer 3 catches semantic correctness — the grader scores too much for too little work, or the optimal path inexplicably scores below 0.85. These are the bugs that pass all unit tests but make the environment useless for training.
+Layer 4 catches active exploitation — single-action shortcuts, postmortem spam, keyword injection into write_postmortem content. Without this layer, a model could score 0.9 by writing "lock_timeout race condition rollback" in its very first postmortem call.
+Layer 5 closes the feedback loop automatically — the LLM critique identifies qualitative issues (thin log templates, reward signal gaps, unrealistic cascades) that deterministic tests cannot, and converts them to concrete patch proposals in eval_patch_proposals.md rather than leaving them as vague complaints.

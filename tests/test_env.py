@@ -1,0 +1,271 @@
+"""
+Comprehensive tests for SREBench environment.
+Uses httpx.AsyncClient with app=app for all tests (no server needed).
+"""
+import pytest
+import json
+from httpx import AsyncClient, ASGITransport
+from app.main import app
+from app.models import Action, Observation, StepResponse
+from app.environment import SREBenchEnvironment
+
+transport = ASGITransport(app=app)
+
+
+# ─── Helper ────────────────────────────────────────────
+
+async def reset_task(client: AsyncClient, task_id: str, seed: int = 42) -> dict:
+    resp = await client.post("/reset", json={"task_id": task_id, "seed": seed})
+    assert resp.status_code == 200
+    return resp.json()
+
+
+async def do_step(client: AsyncClient, action_type: str, parameters: dict = None,
+                  reasoning: str = "Testing this action for investigation") -> dict:
+    resp = await client.post("/step", json={
+        "action_type": action_type,
+        "parameters": parameters or {},
+        "reasoning": reasoning,
+    })
+    assert resp.status_code == 200
+    return resp.json()
+
+
+# ─── 1. Reset Tests ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reset_task1():
+    """Reset returns valid Observation with all 8 services."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        obs = await reset_task(client, "task1_memory_leak")
+        assert len(obs["service_statuses"]) == 8
+        assert obs["step_count"] == 0
+        assert obs["incident_phase"] == "investigating"
+        assert "order-service" in obs["service_statuses"]
+        assert obs["service_statuses"]["order-service"]["status"] == "down"
+
+
+@pytest.mark.asyncio
+async def test_reset_task2():
+    """Reset returns api-gateway as degraded."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        obs = await reset_task(client, "task2_db_cascade")
+        assert obs["service_statuses"]["api-gateway"]["status"] == "degraded"
+        assert obs["service_statuses"]["payment-service"]["status"] == "down"
+
+
+@pytest.mark.asyncio
+async def test_reset_task3():
+    """Reset returns multiple degraded services."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        obs = await reset_task(client, "task3_race_condition")
+        degraded = [s for s, v in obs["service_statuses"].items() if v["status"] == "degraded"]
+        assert len(degraded) >= 2
+
+
+# ─── 2. Step requires reset ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_step_requires_reset():
+    """Calling step without reset raises error."""
+    # Use a fresh env by creating a new app instance test
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # First reset to a known state, then we test the actual error
+        # The shared env instance may already be initialized
+        # We test the error via the environment class directly
+        env = SREBenchEnvironment()
+        with pytest.raises(RuntimeError, match="reset"):
+            await env.step(Action(
+                action_type="list_services",
+                parameters={},
+                reasoning="Testing without reset"
+            ))
+
+
+# ─── 3. Task 1 Optimal Path ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task1_optimal_path():
+    """Full optimal episode — score >= 0.85."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task1_memory_leak")
+
+        # list_services
+        await do_step(client, "list_services")
+
+        # read_logs on order-service
+        await do_step(client, "read_logs", {"service": "order-service"},
+                      "Reading logs for order-service to find error cause")
+
+        # check_metrics on order-service
+        await do_step(client, "check_metrics",
+                      {"service": "order-service", "metric": "memory"},
+                      "Checking memory metrics to confirm OOM suspicion")
+
+        # apply_fix
+        await do_step(client, "apply_fix",
+                      {"service": "order-service", "fix_type": "restart"},
+                      "Restarting order-service to resolve OOM kill issue")
+
+        # verify_health
+        result = await do_step(client, "verify_health",
+                               {"service": "order-service"},
+                               "Verifying order-service is healthy after restart")
+
+        # Check if resolved
+        assert result["reward"]["done"] is True
+        assert result["reward"]["episode_score"] >= 0.85
+
+
+# ─── 4. Wrong service penalty ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task1_wrong_service_penalty():
+    """Apply fix to wrong service gets negative reward."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task1_memory_leak")
+
+        result = await do_step(client, "apply_fix",
+                               {"service": "auth-service", "fix_type": "restart"},
+                               "Applying fix to auth-service to test wrong service penalty")
+
+        assert result["reward"]["step_reward"] <= -0.05
+
+
+# ─── 5. Task 2 naive fix capped ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_task2_naive_fix_capped():
+    """Restart api-gateway without tracing — grader score <= 0.35."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task2_db_cascade")
+
+        # Directly fix api-gateway (wrong)
+        await do_step(client, "apply_fix",
+                      {"service": "api-gateway", "fix_type": "restart"},
+                      "Restarting api-gateway directly without tracing root cause")
+
+        # Get grader score
+        grader_resp = await client.get("/grader")
+        assert grader_resp.status_code == 200
+        score = grader_resp.json()["episode_score"]
+        assert score <= 0.35
+
+
+# ─── 6. Task 3 needs deploy check ───────────────────────
+
+@pytest.mark.asyncio
+async def test_task3_needs_deploy_check():
+    """Score < 0.30 if check_deployments never called."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task3_race_condition")
+
+        # Try to fix without checking deploys
+        await do_step(client, "list_services")
+        await do_step(client, "check_metrics",
+                      {"service": "inventory-service", "metric": "error_rate"},
+                      "Checking error rate on inventory service for investigation")
+        await do_step(client, "apply_fix",
+                      {"service": "inventory-service", "fix_type": "restart"},
+                      "Restarting inventory service to try to resolve errors")
+
+        grader_resp = await client.get("/grader")
+        score = grader_resp.json()["episode_score"]
+        assert score <= 0.30
+
+
+# ─── 7. Grader endpoint ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_grader_endpoint():
+    """GET /grader returns float in [0, 1]."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task1_memory_leak")
+        await do_step(client, "list_services")
+
+        resp = await client.get("/grader")
+        assert resp.status_code == 200
+        score = resp.json()["episode_score"]
+        assert 0.0 <= score <= 1.0
+
+
+# ─── 8. Tasks endpoint ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_tasks_endpoint():
+    """GET /tasks returns 3 tasks with correct ids."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/tasks")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["tasks"]) == 3
+        ids = {t["id"] for t in data["tasks"]}
+        assert ids == {"task1_memory_leak", "task2_db_cascade", "task3_race_condition"}
+
+
+# ─── 9. Reproducibility ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reproducibility():
+    """Same seed produces identical observations."""
+    async def run_episode(client):
+        obs = await reset_task(client, "task1_memory_leak", seed=42)
+        result1 = await do_step(client, "list_services")
+        result2 = await do_step(client, "check_metrics",
+                                {"service": "order-service", "metric": "memory"},
+                                "Checking memory metrics for reproducibility test")
+        return [obs, result1, result2]
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        run1 = await run_episode(client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        run2 = await run_episode(client)
+
+    assert json.dumps(run1, sort_keys=True) == json.dumps(run2, sort_keys=True)
+
+
+# ─── 10. Reward bounds ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reward_bounds():
+    """All step rewards are in [-0.25, +0.35]."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task1_memory_leak")
+
+        actions = [
+            ("list_services", {}),
+            ("read_logs", {"service": "order-service"}),
+            ("check_metrics", {"service": "order-service", "metric": "memory"}),
+            ("check_alerts", {}),
+            ("apply_fix", {"service": "order-service", "fix_type": "restart"}),
+        ]
+
+        for action_type, params in actions:
+            result = await do_step(client, action_type, params,
+                                   f"Testing {action_type} for reward bounds check")
+            reward = result["reward"]["step_reward"]
+            assert -0.25 <= reward <= 0.35, f"Reward {reward} out of bounds for {action_type}"
+
+
+# ─── 11. Health endpoint ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_health_endpoint():
+    """GET /health returns 200 with correct fields."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["environment"] == "srebench"
+
+
+# ─── 12. State endpoint ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_state_endpoint():
+    """GET /state returns valid dict even before reset."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/state")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), dict)

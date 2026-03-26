@@ -1,0 +1,78 @@
+---
+name: srebench
+version: "1.0.0"
+description: >
+  SREBench simulates on-call incident response for SRE/DevOps agents.
+  The agent receives production alerts and must investigate logs, metrics,
+  and service dependencies to identify root cause, apply fixes, verify
+  resolution, and write a postmortem.
+tags: [openenv, sre, devops, incident-response, aiops]
+tasks:
+  - id: task1_memory_leak
+    name: Memory Leak OOM Kill
+    difficulty: easy
+    max_steps: 20
+    description: >
+      A single service is OOM-killing repeatedly. Logs are clear.
+      Agent must identify the correct service and apply a restart.
+  - id: task2_db_cascade
+    name: Cascading DB Pool Exhaustion
+    difficulty: medium
+    max_steps: 30
+    description: >
+      Service A is returning 503s because Service B (upstream) has
+      exhausted its DB connection pool. Agent must trace the dependency
+      chain, identify root cause, and drain/scale the pool.
+  - id: task3_race_condition
+    name: Distributed Race Condition via Config Change
+    difficulty: hard
+    max_steps: 40
+    description: >
+      An intermittent 5xx spike began 12 minutes after a config change.
+      The agent must correlate the deploy timeline, diff the config,
+      identify the cache race condition, roll back, and verify resolution.
+action_space:
+  type: object
+  fields:
+    - name: action_type
+      type: string
+      enum: [read_logs, check_metrics, list_services, check_alerts,
+             check_deployments, check_dependencies, run_diagnostic,
+             apply_fix, verify_health, write_postmortem, escalate]
+    - name: parameters
+      type: object
+      description: Action-specific parameters (service name, time range, fix type, etc.)
+    - name: reasoning
+      type: string
+      description: Agent's chain-of-thought before acting (required, min 10 chars)
+observation_space:
+  type: object
+  fields:
+    - name: timestamp
+      type: string
+    - name: alert_summary
+      type: string
+    - name: service_statuses
+      type: object
+    - name: last_action_result
+      type: string
+    - name: incident_phase
+      type: string
+      enum: [investigating, mitigating, verifying, resolved]
+    - name: available_actions
+      type: array
+    - name: step_count
+      type: integer
+    - name: time_elapsed_minutes
+      type: integer
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  tasks: GET /tasks
+  grader: GET /grader
+  baseline: POST /baseline
+baseline_scores:
+  task1_memory_leak: 0.62
+  task2_db_cascade: 0.43
+  task3_race_condition: 0.38
