@@ -104,9 +104,9 @@ endpoints:
   grader: GET /grader
   baseline: POST /baseline
 baseline_scores:
-  task1_memory_leak: 0.622
-  task2_db_cascade: 0.263
-  task3_race_condition: 0.133
-  task4_dns_failure: 0.625
-  task5_cert_expiry: 0.326
-  task6_network_partition: 0.274
+  task1_memory_leak: 0.610
+  task2_db_cascade: 0.333
+  task3_race_condition: 0.750
+  task4_dns_failure: 0.898
+  task5_cert_expiry: 0.679
+  task6_network_partition: 0.791

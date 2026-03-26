@@ -20,31 +20,48 @@ SEED = 42
 MODEL = os.getenv("BASELINE_MODEL", "deepseek-ai/deepseek-v3.1-terminus")
 API_BASE = os.getenv("BASELINE_API_BASE", "https://integrate.api.nvidia.com/v1")
 
-SYSTEM_PROMPT = """You are an expert SRE on-call engineer.
-You will receive an incident alert and must investigate and resolve it.
-On each turn, output a JSON action in this exact format:
+SYSTEM_PROMPT = """You are an expert SRE on-call engineer debugging a production incident.
+
+## INVESTIGATION METHODOLOGY (follow this order)
+1. ORIENT: list_services + check_alerts to understand scope
+2. GATHER: read_logs + check_metrics on degraded services — look for error spikes, timeouts, stale data
+3. CORRELATE: check_deployments to find recent changes. Compare deploy timestamps with error start times.
+4. DIAGNOSE: run_diagnostic to confirm root cause. ALWAYS use type="config_diff" with deploy_id if a suspicious deploy exists. Use type="network" if you see connection timeouts or unreachable errors.
+5. FIX: apply_fix targeting the ROOT CAUSE, not symptoms. Include deploy_id when rolling back.
+6. VERIFY: verify_health AFTER fixing
+7. DOCUMENT: write_postmortem mentioning the specific root cause
+
+## CRITICAL RULES
+- NEVER apply_fix(fix_type="restart") until you have checked deployments and logs. Restarts mask config/network issues.
+- When multiple services are degraded, find the ONE root cause service. Symptoms cascade through dependencies.
+- If errors started at time T, check what was deployed around time T — timing correlation = likely cause.
+- If logs mention "stale cache", "connection timed out", "network unreachable", or "split-brain" → suspect NETWORK PARTITION. Run diagnostic type="network".
+- If a config change reduced timeouts/limits → the fix is ROLLBACK, not restart.
+- After fixing network issues, ALWAYS check for stale data that needs reconciliation (flush_cache, reconcile_data).
+- A fix is INCOMPLETE if data consistency is not restored.
+
+## RESPONSE FORMAT
+Output exactly one JSON object per turn:
 {
-  "action_type": "<one of the available actions>",
+  "action_type": "<action>",
   "parameters": { ... },
-  "reasoning": "Your step-by-step reasoning before acting"
+  "reasoning": "What I observe → What I suspect → Why this action"
 }
 
-Available action_types:
-- read_logs: Read logs for a service. Params: {"service": "<name>"}
-- check_metrics: Check metrics. Params: {"service": "<name>", "metric": "<type>"}
-- list_services: List all services and their statuses. Params: {}
-- check_alerts: View active alerts. Params: {}
-- check_deployments: View recent deployments. Params: {"last_n": 5} or {"service": "<name>"}
-- check_dependencies: View service dependency graph. Params: {"service": "<name>"}
-- run_diagnostic: Run diagnostic on a service. Params: {"service": "<name>", "type": "<diag_type>"} (optionally "deploy_id")
-- apply_fix: Apply a fix. Params: {"service": "<name>", "fix_type": "<type>"} (optionally "deploy_id")
-- verify_health: Verify system health. Params: {"service": "<name>"} or {}
-- write_postmortem: Write incident postmortem. Params: {"content": "<detailed postmortem>"}
-- escalate: Get a hint. Params: {}
+## AVAILABLE ACTIONS
+- list_services: {} — List all services and statuses
+- check_alerts: {} — View active alerts
+- read_logs: {"service": "<name>"} — Read application logs
+- check_metrics: {"service": "<name>", "metric": "<type>"} — Get service metrics
+- check_deployments: {"last_n": 5} or {"service": "<name>"} — Recent deploys with timestamps
+- check_dependencies: {"service": "<name>"} — Service dependency graph
+- run_diagnostic: {"service": "<name>", "type": "<diag_type>"} — Run diagnostics (types: general, config_diff, network, dns, tls, connection_pool, iptables). Add "deploy_id" for config_diff.
+- apply_fix: {"service": "<name>", "fix_type": "<type>"} — Apply a remediation. Add "deploy_id" for rollbacks.
+- verify_health: {"service": "<name>"} or {} — Verify resolution
+- write_postmortem: {"content": "<detailed text>"} — Document the incident
+- escalate: {} — Get a hint (costs points)
 
-Always think carefully about the dependency graph before applying fixes.
-Prefer to read_logs and check_metrics before applying any fix.
-Only output valid JSON — no markdown, no commentary outside the JSON.
+Output valid JSON only — no markdown fences, no commentary outside the JSON object.
 """
 
 
@@ -83,6 +100,55 @@ def extract_json(content: str) -> dict:
     raise ValueError(f"No valid JSON found in: {content[:200]}")
 
 
+def format_observation(obs: dict, step_num: int, reward: float, is_initial: bool = False) -> str:
+    """Format observation to highlight key signals for the LLM."""
+    parts = []
+    if is_initial:
+        parts.append(f"🚨 INCIDENT ALERT: {obs['alert_summary']}")
+        parts.append(f"\nAvailable actions: {obs['available_actions']}")
+    else:
+        result = obs.get('last_action_result', '')
+        parts.append(f"Result: {result}")
+        parts.append(f"Phase: {obs['incident_phase']} | Step reward: {reward}")
+
+    # Compact service statuses highlighting problems
+    statuses = obs.get('service_statuses', {})
+    degraded = []
+    healthy = []
+    if isinstance(statuses, dict):
+        items = statuses.values()
+    else:
+        items = statuses
+    for s in items:
+        if isinstance(s, str):
+            healthy.append(s)
+            continue
+        name = s.get('name', '?')
+        status = s.get('status', '')
+        err = s.get('error_rate', 0)
+        lat = s.get('latency_p99_ms', 0)
+        restarts = s.get('restarts_last_hour', 0)
+        if status in ('degraded', 'down'):
+            extra = f", restarts={restarts}" if restarts > 0 else ""
+            degraded.append(f"  ⚠ {name}: {status} (err={err}, lat={lat}ms{extra})")
+        else:
+            healthy.append(name)
+
+    if degraded:
+        parts.append("\nDEGRADED/DOWN services:")
+        parts.extend(degraded)
+    if healthy:
+        parts.append(f"Healthy: {', '.join(healthy)}")
+
+    # Periodic reminders
+    if step_num > 0 and step_num % 5 == 0:
+        parts.append("\n💡 Reminder: Have you checked deployments? Correlated timing? Run diagnostics with deploy_id?")
+    if step_num > 0 and step_num % 8 == 0:
+        parts.append("💡 Reminder: After fixing root cause, check for stale data/caches that need reconciliation.")
+
+    return "\n".join(parts)
+
+
 def run_episode(client: OpenAI, task_id: str) -> float:
     """Runs one full episode. Returns final grader score."""
     # 1. Reset
@@ -91,13 +157,12 @@ def run_episode(client: OpenAI, task_id: str) -> float:
                             timeout=30)
     obs = reset_resp.json()["observation"]
 
+    initial_msg = format_observation(obs, 0, 0.0, is_initial=True)
+    initial_msg += "\n\nFollow the investigation methodology. What do you do first?"
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content":
-            f"Incident alert: {obs['alert_summary']}\n"
-            f"Available actions: {obs['available_actions']}\n"
-            f"Service statuses: {json.dumps(obs['service_statuses'], indent=2)}\n"
-            "What do you do first?"}
+        {"role": "user", "content": initial_msg},
     ]
 
     max_steps = {"task1_memory_leak": 20,
@@ -155,14 +220,22 @@ def run_episode(client: OpenAI, task_id: str) -> float:
 
         # 4. Add to message history
         messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content":
-            f"Result: {obs['last_action_result']}\n"
-            f"Incident phase: {obs['incident_phase']}\n"
-            f"Step reward: {reward}\n"
-            f"Service statuses: {json.dumps(obs['service_statuses'], indent=2)}\n"
-            + (f"Available actions: {obs['available_actions']}"
-               if step_num % 3 == 0 else "")
-        })
+        obs_msg = format_observation(obs, step_num + 1, reward)
+        messages.append({"role": "user", "content": obs_msg})
+
+        # Context window management: summarize old messages to prevent context overflow
+        if len(messages) > 20:
+            # Keep system prompt + last 14 messages, summarize the middle
+            old_actions = []
+            for m in messages[1:-14]:
+                if m["role"] == "assistant":
+                    try:
+                        act = extract_json(m["content"])
+                        old_actions.append(f"- {act.get('action_type', '?')}({json.dumps(act.get('parameters', {}))})")
+                    except Exception:
+                        old_actions.append(f"- (parse error)")
+            summary = "Previous actions taken:\n" + "\n".join(old_actions[-10:])
+            messages = [messages[0], {"role": "user", "content": summary}] + messages[-14:]
 
         if done:
             return obs.get("episode_score", 0.0)
