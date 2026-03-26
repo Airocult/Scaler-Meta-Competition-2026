@@ -1,0 +1,72 @@
+# torchforge GRPO training config for SREBench
+# See https://github.com/meta-pytorch/torchforge for full documentation.
+#
+# Usage:
+#   torchforge grpo --config config.yaml --env-url ws://localhost:7860
+
+model:
+  name: meta-llama/Llama-3.1-8B-Instruct
+  dtype: bfloat16
+  tensor_parallel_size: 2
+
+training:
+  algorithm: grpo
+  num_epochs: 3
+  batch_size: 8
+  group_size: 4            # GRPO: generate 4 completions per prompt, rank by reward
+  learning_rate: 1.0e-6
+  weight_decay: 0.01
+  warmup_steps: 50
+  max_grad_norm: 1.0
+  kl_penalty: 0.01         # KL divergence penalty vs reference policy
+  gamma: 1.0               # Discount factor (episodic, no discounting)
+  use_advantage_whitening: true
+
+environment:
+  name: srebench
+  url: ws://localhost:7860
+  protocol: openenv         # Uses OpenEnv WebSocket protocol
+  tasks:
+    - id: task1_memory_leak
+      max_steps: 20
+      weight: 1.0            # Sampling weight in curriculum
+    - id: task2_db_cascade
+      max_steps: 30
+      weight: 1.5
+    - id: task3_race_condition
+      max_steps: 40
+      weight: 2.0            # Harder tasks sampled more often
+
+  # Reward configuration
+  reward:
+    source: environment       # Use env reward (vs learned reward model)
+    use_episode_score: true   # Use final grader score for GRPO ranking
+    normalize: true
+    clip_range: [-1.0, 1.0]
+
+rollout:
+  num_rollout_workers: 2
+  episodes_per_update: 32
+  seed_strategy: random       # Random seeds for diversity
+
+generation:
+  max_new_tokens: 256
+  temperature: 0.7
+  top_p: 0.95
+  stop_sequences: ["}"]       # Actions are JSON objects
+
+# System prompt injected before each episode
+prompt_template: |
+  You are an expert SRE on-call engineer responding to a production incident.
+  Analyze the situation and take the best action to resolve the incident.
+  Output a JSON action: {"action_type": "...", "parameters": {...}, "reasoning": "..."}
+
+logging:
+  wandb_project: srebench-grpo
+  log_interval: 10
+  eval_interval: 50
+  save_interval: 100
+
+checkpoint:
+  save_dir: ./checkpoints/srebench-grpo
+  keep_last: 3

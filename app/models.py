@@ -1,6 +1,15 @@
+"""
+SREBench data models — extends OpenEnv SDK base types for full compatibility.
+"""
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, Any
 from enum import Enum
+
+from openenv.core.env_server.types import (
+    Action as OpenEnvAction,
+    Observation as OpenEnvObservation,
+    State as OpenEnvState,
+)
 
 
 class ServiceStatus(BaseModel):
@@ -18,7 +27,8 @@ class IncidentPhase(str, Enum):
     RESOLVED = "resolved"
 
 
-class Action(BaseModel):
+class SREAction(OpenEnvAction):
+    """SRE incident response action — extends OpenEnv Action."""
     action_type: Literal[
         "read_logs",
         "check_metrics",
@@ -36,7 +46,8 @@ class Action(BaseModel):
     reasoning: str = Field(default="")
 
 
-class Observation(BaseModel):
+class SREObservation(OpenEnvObservation):
+    """SRE incident observation — extends OpenEnv Observation (inherits done, reward, metadata)."""
     timestamp: str
     alert_summary: str
     service_statuses: dict[str, ServiceStatus]
@@ -45,22 +56,26 @@ class Observation(BaseModel):
     available_actions: list[str]
     step_count: int
     time_elapsed_minutes: int
-    hints_used: int  # tracks if agent called escalate
+    hints_used: int
+    # Detailed reward info (also available via top-level reward field)
+    step_reward: float = 0.0
+    cumulative_reward: float = 0.0
+    episode_score: float = 0.0
 
 
-class Reward(BaseModel):
-    step_reward: float  # reward for this step
-    cumulative_reward: float  # total so far
-    episode_score: float  # final 0.0–1.0 (only meaningful when done=True)
-    done: bool
-    info: dict[str, Any]
+class SREState(OpenEnvState):
+    """Full environment state — extends OpenEnv State (inherits episode_id, step_count)."""
+    task_id: str = ""
+    incident_phase: str = "investigating"
+    cumulative_reward: float = 0.0
+    done: bool = False
+    hints_used: int = 0
+    root_cause_identified: bool = False
+    fix_applied: bool = False
+    resolution_verified: bool = False
+    postmortem_written: bool = False
 
 
-class ResetRequest(BaseModel):
-    task_id: str
-    seed: Optional[int] = 42  # reproducibility default
-
-
-class StepResponse(BaseModel):
-    observation: Observation
-    reward: Reward
+# Backward-compatible aliases
+Action = SREAction
+Observation = SREObservation

@@ -54,7 +54,7 @@ def run_episode(client: OpenAI, task_id: str) -> float:
     reset_resp = httpx.post(f"{BASE_URL}/reset",
                             json={"task_id": task_id, "seed": SEED},
                             timeout=30)
-    obs = reset_resp.json()
+    obs = reset_resp.json()["observation"]
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -92,10 +92,10 @@ def run_episode(client: OpenAI, task_id: str) -> float:
             print(f"  [step {step_num}] LLM error: {e}", file=sys.stderr)
             break
 
-        # 3. Send to env
+        # 3. Send to env (OpenEnv format wraps action)
         try:
             step_resp = httpx.post(f"{BASE_URL}/step",
-                                   json=raw_action, timeout=30)
+                                   json={"action": raw_action}, timeout=30)
             if step_resp.status_code != 200:
                 print(f"  [step {step_num}] Step error: {step_resp.text}", file=sys.stderr)
                 break
@@ -106,6 +106,7 @@ def run_episode(client: OpenAI, task_id: str) -> float:
 
         obs = step_data["observation"]
         reward = step_data["reward"]
+        done = step_data["done"]
 
         # 4. Add to message history
         messages.append({"role": "assistant",
@@ -113,14 +114,14 @@ def run_episode(client: OpenAI, task_id: str) -> float:
         messages.append({"role": "user", "content":
             f"Result: {obs['last_action_result']}\n"
             f"Incident phase: {obs['incident_phase']}\n"
-            f"Step reward: {reward['step_reward']}\n"
+            f"Step reward: {reward}\n"
             f"Service statuses: {json.dumps(obs['service_statuses'], indent=2)}\n"
             + (f"Available actions: {obs['available_actions']}"
                if step_num % 3 == 0 else "")
         })
 
-        if reward["done"]:
-            return reward["episode_score"]
+        if done:
+            return obs.get("episode_score", 0.0)
 
     # Episode ended without done=True — get grader score
     grader_resp = httpx.get(f"{BASE_URL}/grader", timeout=30)

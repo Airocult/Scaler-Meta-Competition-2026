@@ -1,12 +1,16 @@
 """
 Comprehensive tests for SREBench environment.
 Uses httpx.AsyncClient with app=app for all tests (no server needed).
+
+Tests the OpenEnv-standard API format:
+  POST /reset  → {"observation": {...}, "reward": null, "done": false}
+  POST /step   → {"observation": {...}, "reward": float, "done": bool}
 """
 import pytest
 import json
 from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.models import Action, Observation, StepResponse
+from app.models import SREAction, SREObservation
 from app.environment import SREBenchEnvironment
 
 transport = ASGITransport(app=app)
@@ -17,15 +21,18 @@ transport = ASGITransport(app=app)
 async def reset_task(client: AsyncClient, task_id: str, seed: int = 42) -> dict:
     resp = await client.post("/reset", json={"task_id": task_id, "seed": seed})
     assert resp.status_code == 200
-    return resp.json()
+    data = resp.json()
+    return data["observation"]
 
 
 async def do_step(client: AsyncClient, action_type: str, parameters: dict = None,
                   reasoning: str = "Testing this action for investigation") -> dict:
     resp = await client.post("/step", json={
-        "action_type": action_type,
-        "parameters": parameters or {},
-        "reasoning": reasoning,
+        "action": {
+            "action_type": action_type,
+            "parameters": parameters or {},
+            "reasoning": reasoning,
+        }
     })
     assert resp.status_code == 200
     return resp.json()
@@ -68,18 +75,13 @@ async def test_reset_task3():
 @pytest.mark.asyncio
 async def test_step_requires_reset():
     """Calling step without reset raises error."""
-    # Use a fresh env by creating a new app instance test
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # First reset to a known state, then we test the actual error
-        # The shared env instance may already be initialized
-        # We test the error via the environment class directly
-        env = SREBenchEnvironment()
-        with pytest.raises(RuntimeError, match="reset"):
-            await env.step(Action(
-                action_type="list_services",
-                parameters={},
-                reasoning="Testing without reset"
-            ))
+    env = SREBenchEnvironment()
+    with pytest.raises(RuntimeError, match="reset"):
+        env.step(SREAction(
+            action_type="list_services",
+            parameters={},
+            reasoning="Testing without reset"
+        ))
 
 
 # ─── 3. Task 1 Optimal Path ──────────────────────────────
@@ -113,8 +115,8 @@ async def test_task1_optimal_path():
                                "Verifying order-service is healthy after restart")
 
         # Check if resolved
-        assert result["reward"]["done"] is True
-        assert result["reward"]["episode_score"] >= 0.85
+        assert result["done"] is True
+        assert result["observation"]["episode_score"] >= 0.85
 
 
 # ─── 4. Wrong service penalty ────────────────────────────
@@ -129,7 +131,7 @@ async def test_task1_wrong_service_penalty():
                                {"service": "auth-service", "fix_type": "restart"},
                                "Applying fix to auth-service to test wrong service penalty")
 
-        assert result["reward"]["step_reward"] <= -0.05
+        assert result["reward"] <= -0.05
 
 
 # ─── 5. Task 2 naive fix capped ─────────────────────────
@@ -243,7 +245,7 @@ async def test_reward_bounds():
         for action_type, params in actions:
             result = await do_step(client, action_type, params,
                                    f"Testing {action_type} for reward bounds check")
-            reward = result["reward"]["step_reward"]
+            reward = result["reward"]
             assert -0.25 <= reward <= 0.35, f"Reward {reward} out of bounds for {action_type}"
 
 
@@ -251,13 +253,12 @@ async def test_reward_bounds():
 
 @pytest.mark.asyncio
 async def test_health_endpoint():
-    """GET /health returns 200 with correct fields."""
+    """GET /health returns 200."""
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "ok"
-        assert data["environment"] == "srebench"
+        assert data["status"] == "healthy"
 
 
 # ─── 12. State endpoint ─────────────────────────────────
@@ -269,3 +270,28 @@ async def test_state_endpoint():
         resp = await client.get("/state")
         assert resp.status_code == 200
         assert isinstance(resp.json(), dict)
+
+
+# ─── 13. OpenEnv schema endpoint ────────────────────────
+
+@pytest.mark.asyncio
+async def test_schema_endpoint():
+    """GET /schema returns action and observation schemas."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/schema")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "action" in data
+        assert "observation" in data
+
+
+# ─── 14. OpenEnv metadata endpoint ──────────────────────
+
+@pytest.mark.asyncio
+async def test_metadata_endpoint():
+    """GET /metadata returns environment metadata."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/metadata")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "SREBench"

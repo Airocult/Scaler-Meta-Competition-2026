@@ -69,6 +69,10 @@ endpoints:
   reset: POST /reset
   step: POST /step
   state: GET /state
+  schema: GET /schema
+  metadata: GET /metadata
+  health: GET /health
+  websocket: WS /ws
   tasks: GET /tasks
   grader: GET /grader
   baseline: POST /baseline
