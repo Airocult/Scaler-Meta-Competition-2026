@@ -79,3 +79,9 @@ async def baseline():
         raise HTTPException(500, "Baseline script timed out after 300s")
     except json.JSONDecodeError:
         raise HTTPException(500, "Baseline script returned invalid JSON")
+
+
+def serve():
+    """Entry point for `server` console_script (used by openenv serve)."""
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=7860)

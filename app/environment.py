@@ -47,7 +47,9 @@ class SREBenchEnvironment(Environment[SREAction, SREObservation, SREState]):
         task_id: Optional[str] = None,
         **kwargs: Any,
     ) -> SREObservation:
-        if task_id is None or task_id not in SCENARIO_MAP:
+        if task_id is None:
+            task_id = "task1_memory_leak"  # default task for validation
+        if task_id not in SCENARIO_MAP:
             raise ValueError(
                 f"Unknown task_id: {task_id}. Available: {list(SCENARIO_MAP.keys())}"
             )
