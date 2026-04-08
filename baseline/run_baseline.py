@@ -17,7 +17,7 @@ BASE_URL = os.getenv("SREBENCH_URL", "http://localhost:7860")
 TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition",
          "task4_dns_failure", "task5_cert_expiry", "task6_network_partition"]
 SEED = 42
-MODEL = os.getenv("BASELINE_MODEL", "gpt-5.1")
+MODEL = os.getenv("BASELINE_MODEL", "gpt-5.2")
 API_BASE = os.getenv("BASELINE_API_BASE", "https://api.openai.com/v1")
 
 SYSTEM_PROMPT = """You are an expert SRE on-call engineer debugging a production incident.
