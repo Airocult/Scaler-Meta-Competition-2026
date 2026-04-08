@@ -284,4 +284,5 @@ class RaceConditionScenario(BaseScenario):
         if self._restarts_without_deploy_check > 2:
             score -= 0.10
 
-        return round(min(1.0, max(0.0, score)), 4)
+        epsilon = 1e-6
+        return round(min(1 - epsilon, max(epsilon, score)), 4)

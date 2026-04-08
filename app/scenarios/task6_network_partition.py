@@ -384,4 +384,5 @@ class NetworkPartitionScenario(BaseScenario):
         score -= min(self._restart_count, 3) * 0.03
         score -= self.hints_used * 0.075
 
-        return round(min(1.0, max(0.0, score)), 4)
+        epsilon = 1e-6
+        return round(min(1 - epsilon, max(epsilon, score)), 4)
