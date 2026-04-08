@@ -1,28 +1,38 @@
 #!/usr/bin/env python3
-"""Runner script for baseline with NVIDIA API config."""
+"""Runner script for baseline with OpenAI API config loaded from .env file."""
 import os
 import sys
-
-os.environ["NVIDIA_API_KEY"] = "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"
-os.environ["BASELINE_MODEL"] = "deepseek-ai/deepseek-v3.1-terminus"
-os.environ["BASELINE_API_BASE"] = "https://integrate.api.nvidia.com/v1"
-os.environ["SREBENCH_URL"] = "http://localhost:7860"
-
-# Run one task at a time and save results incrementally
 import json
-import httpx
+
+# Load .env file from project root
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+if os.path.exists(env_path):
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                os.environ.setdefault(key.strip(), value.strip())
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from run_baseline import run_episode
+from run_baseline import run_episode, MODEL, API_BASE
 from openai import OpenAI
 
 TASKS = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition",
          "task4_dns_failure", "task5_cert_expiry", "task6_network_partition"]
-SEED = 42
+
+api_key = os.environ.get("OPENAI_API_KEY", "")
+if not api_key:
+    print("ERROR: OPENAI_API_KEY not set. Create a .env file or set the environment variable.", file=sys.stderr)
+    sys.exit(1)
+
+print(f"Using model: {MODEL}")
+print(f"Using API base: {API_BASE}")
 
 client = OpenAI(
-    api_key=os.environ["NVIDIA_API_KEY"],
-    base_url=os.environ["BASELINE_API_BASE"],
+    api_key=api_key,
+    base_url=API_BASE,
     timeout=120.0,
 )
 

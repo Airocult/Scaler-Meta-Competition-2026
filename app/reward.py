@@ -6,7 +6,7 @@ not just binary at episode end.
 
 
 class RewardShaper:
-    BASE_STEP_PENALTY = -0.01  # small cost per step (time pressure)
+    BASE_STEP_PENALTY = -0.005  # small cost per step (time pressure)
 
     REWARDS: dict[str, float] = {
         # Positive
@@ -17,13 +17,13 @@ class RewardShaper:
         "postmortem_written": +0.10,
         "postmortem_quality": +0.05,
         # Negative
-        "wrong_fix_applied": -0.10,
+        "wrong_fix_applied": -0.05,
         "destructive_action": -0.20,
         "escalate_used": -0.05,
         "repeated_same_action": -0.05,
         # Neutral/minor
         "info_gathered": +0.02,
-        "no_effect": -0.02,
+        "no_effect": -0.01,
     }
 
     def compute(

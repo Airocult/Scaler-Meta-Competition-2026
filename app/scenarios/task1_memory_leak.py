@@ -23,7 +23,8 @@ class MemoryLeakScenario(BaseScenario):
         self._order_service_fixed = False
 
     def _get_alert_summary(self) -> str:
-        return "CRITICAL: order-service has restarted 4 times in 20 minutes"
+        return ("CRITICAL: order-service has restarted 4 times in 20 minutes. "
+                "Memory usage spiking before each restart — suspected memory leak.")
 
     def _get_service_statuses(self) -> dict[str, ServiceStatus]:
         statuses = {}

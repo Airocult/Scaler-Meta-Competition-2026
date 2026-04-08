@@ -27,7 +27,8 @@ class DBCascadeScenario(BaseScenario):
         self._restart_count = 0
 
     def _get_alert_summary(self) -> str:
-        return "CRITICAL: api-gateway error rate 58% — customers seeing 503s"
+        return ("CRITICAL: api-gateway error rate 58% — customers seeing 503s. "
+                "Multiple services degraded in cascade pattern. Trace upstream dependencies.")
 
     def _get_service_statuses(self) -> dict[str, ServiceStatus]:
         statuses = {}

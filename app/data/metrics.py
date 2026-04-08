@@ -80,7 +80,7 @@ class MetricsSimulator:
                 return rng.randint(lo, hi)
             return rng.randint(20, 150)
         elif scenario == "task5_cert_expiry":
-            slow = {"payment-service": (30, 80), "order-service": (10000, 15000),
+            slow = {"payment-service": (5000, 8000), "order-service": (10000, 15000),
                     "api-gateway": (8000, 12000)}
             if service in slow:
                 lo, hi = slow[service]

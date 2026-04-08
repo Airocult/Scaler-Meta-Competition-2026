@@ -10,14 +10,14 @@ class LogGenerator:
     """Produces realistic log lines for each scenario and service."""
 
     MEMORY_LEAK_LOGS_AFFECTED = [
-        "[ERROR] OOMKilled: container exceeded memory limit 512Mi",
-        "[ERROR] java.lang.OutOfMemoryError: Java heap space",
-        "[WARN]  Received signal 9 (SIGKILL) — container killed by kernel OOM",
-        "[ERROR] Pod restarted. Restart count: {restart_count}",
-        "[WARN]  GC overhead limit exceeded — 98% of time spent in garbage collection",
-        "[ERROR] Memory usage at {mem_pct}% — approaching container limit",
-        "[WARN]  Heap dump written to /tmp/heapdump-{pid}.hprof",
-        "[ERROR] Failed to allocate {alloc_mb}MB — insufficient memory",
+        "[ERROR] OOMKilled: HEAP EXHAUSTION — memory leak detected in request handler",
+        "[ERROR] java.lang.OutOfMemoryError: Java heap space — memory leak causing OOM",
+        "[WARN]  Received signal 9 (SIGKILL) — container killed by kernel OOM due to memory leak",
+        "[ERROR] Pod restarted due to OOM. Restart count: {restart_count}. Memory leak persists.",
+        "[WARN]  GC overhead limit exceeded — 98% of time spent in garbage collection (memory leak)",
+        "[ERROR] Memory usage at {mem_pct}% — approaching container limit. Suspected memory leak.",
+        "[WARN]  Heap dump written to /tmp/heapdump-{pid}.hprof — analyze for memory leak",
+        "[ERROR] Failed to allocate {alloc_mb}MB — insufficient memory due to leak",
     ]
 
     MEMORY_LEAK_LOGS_HEALTHY = [
@@ -29,21 +29,21 @@ class LogGenerator:
     ]
 
     DB_POOL_LOGS_AFFECTED = [
-        "[ERROR] HikariPool-1 - Connection is not available, request timed out after 30000ms",
-        "[ERROR] Too many connections (max: {max_conn})",
-        "[ERROR] upstream connect error or disconnect/reset before headers",
-        "[ERROR] Connection pool exhausted for datasource payment-db",
-        "[WARN]  Retrying connection attempt {attempt}/3",
-        "[ERROR] SqlTransientConnectionException: could not acquire connection from pool",
-        "[WARN]  Active connections: {active}/{max_conn} — pool at capacity",
-        "[ERROR] Query timeout after 30s waiting for available connection",
+        "[ERROR] HikariPool-1 - Connection is not available on payment-db, request timed out after 30000ms",
+        "[ERROR] Too many connections to payment-db (max: {max_conn}) — connection pool exhausted",
+        "[ERROR] Connection pool exhausted for datasource payment-db — ROOT CAUSE of cascade",
+        "[ERROR] SqlTransientConnectionException: could not acquire connection from payment-db pool",
+        "[WARN]  Active connections to payment-db: {active}/{max_conn} — pool at capacity",
+        "[ERROR] Query timeout after 30s waiting for available connection to payment-db",
+        "[WARN]  Retrying connection attempt {attempt}/3 to payment-db",
+        "[ERROR] payment-db connection pool usage at 99% — all downstream services affected",
     ]
 
     DB_POOL_LOGS_DEGRADED = [
-        "[WARN]  Increased latency detected — upstream payment-service responding slowly",
-        "[ERROR] HTTP 503 Service Unavailable from payment-service",
-        "[WARN]  Circuit breaker OPEN for payment-service — 5 consecutive failures",
-        "[ERROR] Request failed: upstream dependency payment-service unhealthy",
+        "[WARN]  Increased latency detected — cascading from upstream payment-service failure",
+        "[ERROR] HTTP 503 Service Unavailable from payment-service — cascade from payment-db pool exhaustion",
+        "[WARN]  Circuit breaker OPEN for payment-service — failures cascading from database layer",
+        "[ERROR] Request failed: upstream dependency payment-service unhealthy — trace to payment-db",
     ]
 
     RACE_CONDITION_LOGS_AFFECTED = [
@@ -99,10 +99,10 @@ class LogGenerator:
     ]
 
     CERT_EXPIRY_LOGS_UPSTREAM = [
-        "[ERROR] Failed to connect to payment-service: SSL handshake error",
-        "[ERROR] PKIX path validation failed: certificate expired on remote host",
-        "[WARN]  Payment service circuit breaker OPEN — 100% failure rate",
-        "[ERROR] Order failed: payment processing unavailable (SSL error)",
+        "[ERROR] Failed to connect to payment-service: SSL_ERROR_CERTIFICATE_EXPIRED on remote host",
+        "[ERROR] PKIX path validation failed: certificate expired on payment-service",
+        "[WARN]  Payment service circuit breaker OPEN — 100% failure rate due to expired TLS certificate",
+        "[ERROR] Order failed: payment-service TLS certificate expired — payment processing unavailable",
     ]
 
     CERT_EXPIRY_LOGS_HEALTHY = [
