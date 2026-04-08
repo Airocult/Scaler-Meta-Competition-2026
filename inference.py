@@ -19,7 +19,7 @@ from openai import OpenAI
 
 # ── Mandatory environment variables ──────────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-5.1")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
 
 # SREBench Space URL
@@ -149,14 +149,26 @@ def extract_json(content: str) -> dict:
 
 def call_llm(client: OpenAI, messages: list) -> str:
     """Call the LLM via OpenAI client and return content."""
-    completion = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=0.1,
-        top_p=0.9,
-        max_tokens=4096,
-        stream=False,
-    )
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=0.1,
+            top_p=0.9,
+            max_tokens=4096,
+            stream=False,
+        )
+    except Exception as e:
+        if "max_tokens" in str(e) or "unsupported_parameter" in str(e):
+            # Reasoning models need max_completion_tokens and don't support temperature/top_p
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                max_completion_tokens=4096,
+                stream=False,
+            )
+        else:
+            raise
     return completion.choices[0].message.content
 
 
