@@ -249,12 +249,10 @@ class DBCascadeScenario(BaseScenario):
             return self._build_observation(result), reward, False
 
     def get_grader_score(self) -> float:
-        epsilon = 1e-6
-        # If agent fixed the wrong surface (gateway/order-service), cap score
         if self._fix_applied_to_wrong_surface and not self._correct_fix_applied:
-            return round(min(0.35 - epsilon, max(epsilon, self._compute_partial_score())), 4)
+            return min(0.35, self._compute_partial_score())
 
-        return round(min(1 - epsilon, max(epsilon, self._compute_partial_score())), 4)
+        return self._compute_partial_score()
 
     def _compute_partial_score(self) -> float:
         score = 0.0
@@ -271,4 +269,5 @@ class DBCascadeScenario(BaseScenario):
         # Escalation penalty
         score -= self.hints_used * 0.05
 
-        return round(min(1.0, max(0.0, score)), 4)
+        epsilon = 1e-4
+        return round(min(1 - epsilon, max(epsilon, score)), 4)

@@ -199,8 +199,8 @@ async def check_endpoints():
         # Custom: /grader
         r = await c.get("/grader")
         score = r.json().get("episode_score")
-        check("/grader returns score in [0,1]",
-              isinstance(score, (int, float)) and 0 <= score <= 1,
+        check("/grader returns score in (0,1)",
+              isinstance(score, (int, float)) and 0 < score < 1,
               f"score={score}")
 
         # Custom: /baseline exists
@@ -211,7 +211,7 @@ async def check_endpoints():
 # ─── 6. Graders produce valid scores ────────────────────────
 
 async def check_graders():
-    section("6. Graders (6 tasks, scores in 0.0–1.0)")
+    section("6. Graders (6 tasks, scores in (0, 1))")
     from httpx import AsyncClient, ASGITransport
     from app.main import app
 
@@ -229,8 +229,8 @@ async def check_graders():
             # Get score
             r = await c.get("/grader")
             score = r.json().get("episode_score", -1)
-            check(f"Grader {task_id}: score={score:.4f} in [0,1]",
-                  0.0 <= score <= 1.0)
+            check(f"Grader {task_id}: score={score:.4f} in (0,1)",
+                  0.0 < score < 1.0)
 
 
 # ─── 7. Baseline script ─────────────────────────────────────

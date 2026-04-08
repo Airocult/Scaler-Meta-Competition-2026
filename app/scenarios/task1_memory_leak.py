@@ -218,5 +218,5 @@ class MemoryLeakScenario(BaseScenario):
         # Escalation penalty
         score -= self.hints_used * 0.05
 
-        epsilon = 1e-6
+        epsilon = 1e-4
         return round(min(1 - epsilon, max(epsilon, score)), 4)

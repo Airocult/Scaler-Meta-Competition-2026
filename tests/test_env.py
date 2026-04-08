@@ -180,7 +180,7 @@ async def test_task3_needs_deploy_check():
 
 @pytest.mark.asyncio
 async def test_grader_endpoint():
-    """GET /grader returns float in [0, 1]."""
+    """GET /grader returns float in (0, 1)."""
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         await reset_task(client, "task1_memory_leak")
         await do_step(client, "list_services")
@@ -188,7 +188,7 @@ async def test_grader_endpoint():
         resp = await client.get("/grader")
         assert resp.status_code == 200
         score = resp.json()["episode_score"]
-        assert 0.0 <= score <= 1.0
+        assert 0.0 < score < 1.0
 
 
 # ─── 8. Tasks endpoint ──────────────────────────────────
