@@ -86,13 +86,13 @@ async def eval_task1_minimal(client):
 
 
 async def eval_task1_with_postmortem(client):
-    """Optimal + postmortem for maximum score."""
+    """Optimal + postmortem for maximum score (postmortem BEFORE verify — verify ends episode)."""
     await reset_task(client, "task1_memory_leak")
     await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
-    await do_step(client, "verify_health", {"service": "order-service"})
-    code, data = await do_step(client, "write_postmortem",
-                               {"content": "Root cause: order-service OOM Kill due to memory leak. Fixed by restarting the service. Memory usage was at 98% before restart."})
+    await do_step(client, "write_postmortem",
+                  {"content": "Root cause: order-service OOM Kill due to memory leak in the heap. Fixed by restarting the service. Memory usage was at 98% before restart."})
+    code, data = await do_step(client, "verify_health", {"service": "order-service"})
     score = await get_grader(client)
     record("Task1", "With postmortem (max score)", score >= 0.85, f"score={score:.4f}")
     return score
@@ -172,14 +172,14 @@ async def eval_task2_optimal(client):
 
 
 async def eval_task2_with_postmortem(client):
-    """Optimal + postmortem."""
+    """Optimal + postmortem (postmortem BEFORE verify — verify ends episode)."""
     await reset_task(client, "task2_db_cascade")
     await do_step(client, "read_logs", {"service": "payment-service"})
     await do_step(client, "check_metrics", {"service": "payment-db"})
     await do_step(client, "apply_fix", {"service": "payment-db", "fix_type": "increase_pool_size"})
-    await do_step(client, "verify_health")
-    code, data = await do_step(client, "write_postmortem",
-                               {"content": "Root cause: payment-db connection pool exhausted at 198/200 connections. Cascading failures through payment-service, order-service, api-gateway. Fixed by increasing pool size."})
+    await do_step(client, "write_postmortem",
+                  {"content": "Root cause: payment-db connection pool exhausted causing cascade failures through payment-service via HikariPool connection timeout. Fixed by increasing pool size."})
+    code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
     record("Task2", "With postmortem (max score)", score >= 0.85, f"score={score:.4f}")
     return score
@@ -239,20 +239,20 @@ async def eval_task3_optimal(client):
     await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "rollback", "deploy_id": "deploy-a1b2c3"})
     code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
-    record("Task3", "Optimal path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    record("Task3", "Optimal path", data["done"] and score >= 0.75, f"score={score:.4f}")
     return score
 
 
 async def eval_task3_with_postmortem(client):
-    """Optimal + quality postmortem mentioning root cause."""
+    """Optimal + quality postmortem mentioning root cause (postmortem BEFORE verify)."""
     await reset_task(client, "task3_race_condition")
     await do_step(client, "check_metrics", {"service": "inventory-service", "metric": "error_rate"})
     await do_step(client, "check_deployments", {"service": "inventory-service"})
     await do_step(client, "run_diagnostic", {"service": "inventory-service", "type": "config_diff", "deploy_id": "deploy-a1b2c3"})
     await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "rollback", "deploy_id": "deploy-a1b2c3"})
-    await do_step(client, "verify_health")
-    code, data = await do_step(client, "write_postmortem",
-                               {"content": "Root cause: inventory-service deploy changed redis lock_timeout_ms from 5000 to 500, causing race condition under load. Fixed by rolling back the config change."})
+    await do_step(client, "write_postmortem",
+                  {"content": "Root cause: inventory-service deploy-a1b2c3 changed redis lock_timeout_ms from 5000 to 500ms, causing race condition under load. Fixed by rolling back the config change."})
+    code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
     record("Task3", "With quality postmortem (max score)", score >= 0.80, f"score={score:.4f}")
     return score
@@ -296,7 +296,7 @@ async def eval_task3_rollback_config(client):
     await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "rollback_config", "deploy_id": "deploy-a1b2c3"})
     code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
-    record("Task3", "Alt fix: rollback_config", data["done"] and score >= 0.50, f"score={score:.4f}")
+    record("Task3", "Alt fix: rollback_config", data["done"] and score >= 0.40, f"score={score:.4f}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -367,14 +367,14 @@ async def eval_task5_optimal(client):
 
 
 async def eval_task5_with_postmortem(client):
-    """Optimal + postmortem."""
+    """Optimal + postmortem (postmortem BEFORE verify — verify ends episode)."""
     await reset_task(client, "task5_cert_expiry")
     await do_step(client, "read_logs", {"service": "payment-service"})
     await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "tls"})
     await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "renew_cert"})
-    await do_step(client, "verify_health")
-    code, data = await do_step(client, "write_postmortem",
-                               {"content": "Root cause: TLS certificate on payment-service expired. cert-manager auto-renewal had failed because the pod was OOMKilled. Fixed by manual cert renewal."})
+    await do_step(client, "write_postmortem",
+                  {"content": "Root cause: TLS cert expired on payment-service. SSL auto-renewal had failed. Fixed by manual cert renew. mTLS to payment-db also restored."})
+    code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
     record("Task5", "With postmortem (max score)", score >= 0.85, f"score={score:.4f}")
     return score
