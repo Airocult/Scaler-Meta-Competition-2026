@@ -190,8 +190,8 @@ async def check_endpoints():
         # Custom: /tasks
         r = await c.get("/tasks")
         tasks = r.json()
-        check("/tasks returns 6 tasks",
-              len(tasks.get("tasks", [])) == 6,
+        check("/tasks returns 16 tasks",
+              len(tasks.get("tasks", [])) == 16,
               f"{len(tasks.get('tasks', []))} tasks")
         check("/tasks has action_schema",
               "action_schema" in tasks)
@@ -211,13 +211,17 @@ async def check_endpoints():
 # ─── 6. Graders produce valid scores ────────────────────────
 
 async def check_graders():
-    section("6. Graders (6 tasks, scores in (0, 1))")
+    section("6. Graders (16 tasks, scores in (0, 1))")
     from httpx import AsyncClient, ASGITransport
     from app.main import app
 
     transport = ASGITransport(app=app)
     tasks = ["task1_memory_leak", "task2_db_cascade", "task3_race_condition",
-             "task4_dns_failure", "task5_cert_expiry", "task6_network_partition"]
+             "task4_dns_failure", "task5_cert_expiry", "task6_network_partition",
+             "task7_kafka_lag", "task8_redis_failover", "task9_disk_full",
+             "task10_rate_limit", "task11_db_migration_lock", "task12_health_flap",
+             "task13_pod_eviction", "task14_cascading_timeout",
+             "task15_secret_rotation", "task16_log_storm"]
 
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         for task_id in tasks:
