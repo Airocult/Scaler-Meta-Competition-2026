@@ -83,7 +83,7 @@ class RaceConditionScenario(BaseScenario):
 
         elif at == "read_logs":
             service = params.get("service", "")
-            logs = LogGenerator.generate(self.task_id, service, self.seed)
+            logs = LogGenerator.generate(self.task_id, service, self.seed, step_count=self.step_count)
             result = f"Logs for {service} (last 20 entries):\n" + "\n".join(logs)
             reward = self._compute_reward("info_gathered")
             return self._build_observation(result), reward, False
@@ -270,12 +270,20 @@ class RaceConditionScenario(BaseScenario):
 
     def get_grader_score(self) -> float:
         score = 0.0
-        score += self._error_spike_noticed * 0.10
-        score += self._deploy_identified * 0.15
-        score += self._config_diff_examined * 0.20
-        score += self._correct_rollback_applied * 0.25
-        score += self._errors_verified_ceased * 0.15
-        score += self._postmortem_mentions_root_cause * 0.15
+        score += self._error_spike_noticed * 0.08
+        score += self._deploy_identified * 0.12
+        score += self._config_diff_examined * 0.18
+        score += self._correct_rollback_applied * 0.22
+        score += self._errors_verified_ceased * 0.13
+        score += self._postmortem_mentions_root_cause * 0.10
+
+        # Evidence breadth bonus (critical for hard tasks)
+        score += self._evidence_breadth_score()
+
+        # Postmortem quality
+        score += self._postmortem_quality_bonus(
+            ["lock_timeout", "race", "config", "redis", "deploy-a1b2c3", "500ms"]
+        )
 
         # Escalation penalty (harder on hard task)
         score -= self.hints_used * 0.075

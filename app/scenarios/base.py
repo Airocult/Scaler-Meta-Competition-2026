@@ -1,5 +1,15 @@
 """
 Abstract base class for all scenarios.
+
+Novel mechanics:
+  - **Cascading degradation**: unresolved incidents get worse over time
+    (error rates drift upward, latencies spike). The environment is
+    non-stationary even without agent actions.
+  - **Evidence tracking**: the grader records which *distinct* evidence
+    sources the agent consulted before attempting a fix. Agents that
+    gather broad evidence score higher than those that guess.
+  - **Red-herring resilience**: mid-episode distracting alerts test
+    whether the agent stays focused on the primary incident.
 """
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
@@ -32,6 +42,15 @@ class BaseScenario(ABC):
         self._resolution_verified = False
         self._postmortem_written = False
 
+        # ── Novel: Evidence tracking ──────────────────────────────
+        # Tracks distinct (action_type, service) pairs gathered before fix
+        self._evidence_sources: set[str] = set()
+        self._fix_attempted = False  # True once first apply_fix is called
+
+        # ── Novel: Degradation drift ──────────────────────────────
+        # Services degrade further each step the incident is unresolved
+        self._degradation_factor = 0.0  # increases per step
+
     def _base_timestamp(self) -> str:
         """Incident start time."""
         return "2026-03-26T03:00:00Z"
@@ -49,10 +68,24 @@ class BaseScenario(ABC):
         ]
 
     def _build_observation(self, last_action_result: str) -> Observation:
-        return Observation(
+        statuses = self._get_service_statuses()
+
+        # ── Novel: Cascading degradation — services get worse over time ──
+        if not self._fix_applied and self._degradation_factor > 0:
+            for name, svc in statuses.items():
+                if svc.status in ("degraded", "down"):
+                    statuses[name] = ServiceStatus(
+                        name=svc.name,
+                        status=svc.status,
+                        error_rate=min(0.99, round(svc.error_rate + self._degradation_factor, 2)),
+                        latency_p99_ms=int(svc.latency_p99_ms * (1 + self._degradation_factor * 2)),
+                        restarts_last_hour=svc.restarts_last_hour,
+                    )
+
+        obs = Observation(
             timestamp=self._current_timestamp(),
             alert_summary=self._get_alert_summary(),
-            service_statuses=self._get_service_statuses(),
+            service_statuses=statuses,
             last_action_result=last_action_result,
             incident_phase=self.incident_phase,
             available_actions=self._available_actions(),
@@ -61,15 +94,80 @@ class BaseScenario(ABC):
             hints_used=self.hints_used,
         )
 
-    def _compute_reward(self, event: str) -> float:
+        # ── Novel: Degradation warning when situation is worsening ──
+        if self._degradation_factor >= 0.10 and not self._fix_applied:
+            obs.last_action_result += (
+                f"\n⚠️ DEGRADATION NOTICE: Incident severity increasing. "
+                f"Error rates have risen {self._degradation_factor:.0%} since alert start."
+            )
+
+        # ── Novel: Red-herring alert mid-episode (tests agent focus) ──
+        import random as _rng_mod
+        rng = _rng_mod.Random(self.seed + 9999)
+        herring_step = rng.randint(3, max(4, self.max_steps // 3))
+        if self.step_count == herring_step and not self._fix_applied:
+            distractors = [
+                "[NEW] WARN: Elevated slow-query count on user-db (p99 query time: 320ms). Possibly unrelated.",
+                "[NEW] INFO: Scheduled maintenance window for auth-service starts in 45 minutes.",
+                "[NEW] WARN: Disk usage on monitoring-stack at 78%. Consider cleanup.",
+            ]
+            distractor = distractors[rng.randint(0, len(distractors) - 1)]
+            obs.alert_summary += f"\n{distractor}"
+
+        return obs
+
+    def _compute_reward(self, event: str, service: str = "") -> float:
         reward = self.reward_shaper.compute(
             event=event,
             step_count=self.step_count,
             max_steps=self.max_steps,
             previous_reward=self.cumulative_reward,
+            service=service,
         )
         self.cumulative_reward += reward
         return reward
+
+    def _record_evidence(self, action_type: str, service: str) -> None:
+        """Track distinct evidence sources gathered before first fix attempt."""
+        if not self._fix_attempted:
+            self._evidence_sources.add(f"{action_type}:{service}")
+
+    def _evidence_breadth_score(self) -> float:
+        """Bonus for investigating multiple distinct sources before fixing.
+        0 sources = 0.0, 1 = 0.01, 2 = 0.02, 3+ = 0.03 (max)"""
+        n = len(self._evidence_sources)
+        return min(n * 0.01, 0.03)
+
+    def _postmortem_quality_bonus(self, keywords: list[str]) -> float:
+        """Score postmortem content for mentioning root-cause keywords.
+
+        This is a novel grading mechanic: instead of binary "wrote postmortem",
+        we evaluate whether the postmortem content demonstrates understanding
+        of the root cause by checking for domain-specific keywords.
+
+        Returns 0.0–0.04 based on keyword coverage.
+        """
+        if not self._postmortem_written:
+            return 0.0
+        # Find the postmortem content from action history
+        content = ""
+        for entry in self._action_history:
+            if entry["action_type"] == "write_postmortem":
+                content = entry["parameters"].get("content", "").lower()
+                break
+        if not content:
+            return 0.0
+        # Score based on keyword coverage
+        matches = sum(1 for kw in keywords if kw.lower() in content)
+        coverage = matches / max(len(keywords), 1)
+        return round(min(coverage * 0.04, 0.04), 4)
+
+    def _advance_degradation(self) -> None:
+        """Worsen service health each step the incident is unresolved."""
+        if not self._fix_applied:
+            self._degradation_factor = min(
+                0.30, self._degradation_factor + (0.02 * (self.step_count / self.max_steps + 0.5))
+            )
 
     def _is_repeated_action(self, action: Action) -> bool:
         if (self._last_action == action.action_type
@@ -84,6 +182,18 @@ class BaseScenario(ABC):
             return obs, 0.0, True
 
         self.step_count += 1
+
+        # Advance degradation drift (services get worse over time)
+        self._advance_degradation()
+
+        # Track evidence gathering before fix attempts
+        service = action.parameters.get("service", "")
+        if action.action_type in ("list_services", "read_logs", "check_metrics",
+                                   "check_alerts", "check_deployments",
+                                   "check_dependencies", "run_diagnostic"):
+            self._record_evidence(action.action_type, service)
+        if action.action_type == "apply_fix":
+            self._fix_attempted = True
 
         # Check for repeated action
         is_repeat = self._is_repeated_action(action)

@@ -146,10 +146,18 @@ class LogGenerator:
     ]
 
     @classmethod
-    def generate(cls, scenario: str, service: str, seed: int, n: int = 20) -> list[str]:
-        """Generate n log lines for a given scenario and service."""
-        rng = _random_module.Random(seed)
-        base_time = datetime(2026, 3, 26, 3, 0, 0)
+    def generate(cls, scenario: str, service: str, seed: int, n: int = 20,
+                 step_count: int = 0) -> list[str]:
+        """Generate n log lines for a given scenario and service.
+
+        Logs vary by step_count — each investigation step reveals a
+        different window of the log stream (temporal variation). This
+        prevents agents from memorising static text and encourages
+        re-reading logs at different points for new evidence.
+        """
+        # Mix step_count into the seed so logs change each step
+        rng = _random_module.Random(seed + step_count * 7919)
+        base_time = datetime(2026, 3, 26, 3, 0, 0) + timedelta(minutes=step_count * 2)
         lines = []
 
         for i in range(n):

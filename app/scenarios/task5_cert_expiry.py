@@ -124,7 +124,7 @@ class CertExpiryScenario(BaseScenario):
                 return self._build_observation(result), reward, False
 
             else:
-                logs = LogGenerator.generate(self.task_id, service, self.seed)
+                logs = LogGenerator.generate(self.task_id, service, self.seed, step_count=self.step_count)
                 result = f"Logs for {service} (last 20 entries):\n" + "\n".join(logs[:8])
                 reward = self._compute_reward("info_gathered")
                 return self._build_observation(result), reward, False
@@ -321,16 +321,24 @@ class CertExpiryScenario(BaseScenario):
 
     def get_grader_score(self) -> float:
         score = 0.0
-        score += self._payment_svc_investigated * 0.10
-        score += self._cert_issue_noticed * 0.10
-        score += self._cert_expiry_identified * 0.20
-        score += self._cert_renewed * 0.30
-        score += self._resolution_verified * 0.15
-        score += self._postmortem_written * 0.10
+        score += self._payment_svc_investigated * 0.08
+        score += self._cert_issue_noticed * 0.08
+        score += self._cert_expiry_identified * 0.18
+        score += self._cert_renewed * 0.27
+        score += self._resolution_verified * 0.13
+        score += self._postmortem_written * 0.08
 
         # Time bonus
         time_bonus = max(0, 1 - (self.step_count / self.max_steps)) * 0.05
         score += time_bonus
+
+        # Evidence breadth bonus
+        score += self._evidence_breadth_score()
+
+        # Postmortem quality
+        score += self._postmortem_quality_bonus(
+            ["tls", "cert", "expired", "payment-service", "ssl", "renew", "auto-renewal"]
+        )
 
         # Penalties
         score -= self._wrong_fix_count * 0.05

@@ -57,7 +57,7 @@ class MemoryLeakScenario(BaseScenario):
 
         elif at == "read_logs":
             service = params.get("service", "")
-            logs = LogGenerator.generate(self.task_id, service, self.seed)
+            logs = LogGenerator.generate(self.task_id, service, self.seed, step_count=self.step_count)
             result = f"Logs for {service} (last 20 entries):\n" + "\n".join(logs)
             reward = self._compute_reward("info_gathered")
             return self._build_observation(result), reward, False
@@ -206,14 +206,22 @@ class MemoryLeakScenario(BaseScenario):
 
     def get_grader_score(self) -> float:
         score = 0.0
-        score += self._correct_service_identified * 0.35
+        score += self._correct_service_identified * 0.30
         score += self._fix_applied_correctly * 0.25
         score += self._resolution_verified * 0.20
-        score += self._postmortem_written * 0.10
+        score += self._postmortem_written * 0.08
 
-        # Time bonus
+        # Time bonus — efficiency matters
         time_bonus = max(0, 1 - (self.step_count / self.max_steps)) * 0.10
         score += time_bonus
+
+        # Evidence breadth — reward diverse investigation before fix
+        score += self._evidence_breadth_score()
+
+        # Postmortem quality — check for root-cause keywords
+        score += self._postmortem_quality_bonus(
+            ["memory", "oom", "leak", "heap", "order-service"]
+        )
 
         # Escalation penalty
         score -= self.hints_used * 0.05

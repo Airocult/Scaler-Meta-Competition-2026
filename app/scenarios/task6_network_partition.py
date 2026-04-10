@@ -130,7 +130,7 @@ class NetworkPartitionScenario(BaseScenario):
                 return self._build_observation(result), reward, False
 
             else:
-                logs = LogGenerator.generate(self.task_id, service, self.seed)
+                logs = LogGenerator.generate(self.task_id, service, self.seed, step_count=self.step_count)
                 result = f"Logs for {service} (last 20 entries):\n" + "\n".join(logs[:8])
                 reward = self._compute_reward("info_gathered")
                 return self._build_observation(result), reward, False
@@ -366,18 +366,27 @@ class NetworkPartitionScenario(BaseScenario):
 
     def get_grader_score(self) -> float:
         score = 0.0
-        score += self._inventory_svc_investigated * 0.10
-        score += self._partition_detected * 0.10
-        score += self._deploy_identified * 0.10
-        score += self._iptables_checked * 0.10
-        score += self._partition_resolved * 0.20
-        score += self._data_reconciled * 0.15
+        score += self._inventory_svc_investigated * 0.08
+        score += self._partition_detected * 0.08
+        score += self._deploy_identified * 0.08
+        score += self._iptables_checked * 0.08
+        score += self._partition_resolved * 0.18
+        score += self._data_reconciled * 0.14
         score += self._resolution_verified * 0.10
-        score += self._postmortem_written * 0.10
+        score += self._postmortem_written * 0.08
 
         # Time bonus
         time_bonus = max(0, 1 - (self.step_count / self.max_steps)) * 0.05
         score += time_bonus
+
+        # Evidence breadth bonus (critical for hard multi-step task)
+        score += self._evidence_breadth_score()
+
+        # Postmortem quality
+        score += self._postmortem_quality_bonus(
+            ["partition", "iptables", "split-brain", "stale", "reconcil",
+             "deploy-net-001", "10.0.2.30", "10.0.2.50"]
+        )
 
         # Penalties
         score -= self._wrong_fix_count * 0.05

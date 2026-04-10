@@ -81,7 +81,7 @@ class DBCascadeScenario(BaseScenario):
 
         elif at == "read_logs":
             service = params.get("service", "")
-            logs = LogGenerator.generate(self.task_id, service, self.seed)
+            logs = LogGenerator.generate(self.task_id, service, self.seed, step_count=self.step_count)
             result = f"Logs for {service} (last 20 entries):\n" + "\n".join(logs)
             if service == "payment-service":
                 self._traced_to_payment_service = True
@@ -256,15 +256,23 @@ class DBCascadeScenario(BaseScenario):
 
     def _compute_partial_score(self) -> float:
         score = 0.0
-        score += self._traced_to_payment_service * 0.15
-        score += self._traced_to_payment_db * 0.25
-        score += self._correct_fix_applied * 0.30
-        score += self._resolution_verified * 0.15
-        score += self._postmortem_written * 0.10
+        score += self._traced_to_payment_service * 0.12
+        score += self._traced_to_payment_db * 0.22
+        score += self._correct_fix_applied * 0.28
+        score += self._resolution_verified * 0.13
+        score += self._postmortem_written * 0.08
 
         # Time bonus (smaller weight)
         time_bonus = max(0, 1 - (self.step_count / self.max_steps)) * 0.05
         score += time_bonus
+
+        # Evidence breadth bonus
+        score += self._evidence_breadth_score()
+
+        # Postmortem quality
+        score += self._postmortem_quality_bonus(
+            ["payment-db", "pool", "connection", "cascade", "hikari"]
+        )
 
         # Escalation penalty
         score -= self.hints_used * 0.05

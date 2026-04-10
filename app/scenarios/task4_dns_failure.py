@@ -104,7 +104,7 @@ class DNSFailureScenario(BaseScenario):
                 reward = self._compute_reward("info_gathered")
                 return self._build_observation(result), reward, False
             else:
-                logs = LogGenerator.generate(self.task_id, service, self.seed)
+                logs = LogGenerator.generate(self.task_id, service, self.seed, step_count=self.step_count)
                 result = f"Logs for {service} (last 20 entries):\n" + "\n".join(logs[:10])
                 reward = self._compute_reward("info_gathered")
                 return self._build_observation(result), reward, False
@@ -285,16 +285,24 @@ class DNSFailureScenario(BaseScenario):
 
     def get_grader_score(self) -> float:
         score = 0.0
-        score += self._auth_service_investigated * 0.15
-        score += self._dns_issue_noticed * 0.15
-        score += self._dns_cache_identified * 0.20
-        score += self._correct_fix_applied * 0.25
-        score += self._resolution_verified * 0.15
-        score += self._postmortem_written * 0.10
+        score += self._auth_service_investigated * 0.12
+        score += self._dns_issue_noticed * 0.13
+        score += self._dns_cache_identified * 0.18
+        score += self._correct_fix_applied * 0.23
+        score += self._resolution_verified * 0.13
+        score += self._postmortem_written * 0.08
 
         # Time bonus
         time_bonus = max(0, 1 - (self.step_count / self.max_steps)) * 0.05
         score += time_bonus
+
+        # Evidence breadth bonus
+        score += self._evidence_breadth_score()
+
+        # Postmortem quality
+        score += self._postmortem_quality_bonus(
+            ["dns", "cache", "stale", "auth-service", "nxdomain", "10.0.0.99"]
+        )
 
         # Wrong fix penalty
         score -= self._wrong_fix_count * 0.05
