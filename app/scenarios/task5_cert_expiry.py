@@ -18,6 +18,9 @@ class CertExpiryScenario(BaseScenario):
     task_id = "task5_cert_expiry"
     max_steps = 35
 
+    def _correct_severity(self) -> str:
+        return "SEV1"  # payment completely down — revenue impact ~$12k/min
+
     def __init__(self, seed: int = 42):
         super().__init__(seed=seed)
         self._payment_svc_investigated = False
@@ -339,6 +342,14 @@ class CertExpiryScenario(BaseScenario):
         score += self._postmortem_quality_bonus(
             ["tls", "cert", "expired", "payment-service", "ssl", "renew", "auto-renewal"]
         )
+
+        # Incident communication bonuses
+        score += self._severity_correct * 0.02
+        score += (self._status_page_updated and self._status_page_before_fix) * 0.02
+
+        # SLO-aware bonus
+        if self._fix_applied and self._fix_before_any_breach:
+            score += 0.02
 
         # Penalties
         score -= self._wrong_fix_count * 0.05

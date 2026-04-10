@@ -17,6 +17,9 @@ class DBCascadeScenario(BaseScenario):
     task_id = "task2_db_cascade"
     max_steps = 30
 
+    def _correct_severity(self) -> str:
+        return "SEV1"  # payment path completely down — revenue impact
+
     def __init__(self, seed: int = 42):
         super().__init__(seed=seed)
         self._traced_to_payment_service = False
@@ -273,6 +276,14 @@ class DBCascadeScenario(BaseScenario):
         score += self._postmortem_quality_bonus(
             ["payment-db", "pool", "connection", "cascade", "hikari"]
         )
+
+        # Incident communication bonuses
+        score += self._severity_correct * 0.02
+        score += (self._status_page_updated and self._status_page_before_fix) * 0.02
+
+        # SLO-aware bonus
+        if self._fix_applied and self._fix_before_any_breach:
+            score += 0.02
 
         # Escalation penalty
         score -= self.hints_used * 0.05

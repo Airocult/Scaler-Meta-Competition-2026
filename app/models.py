@@ -41,6 +41,10 @@ class SREAction(OpenEnvAction):
         "verify_health",
         "write_postmortem",
         "escalate",
+        "trace_request",
+        "check_slo",
+        "classify_severity",
+        "update_status_page",
     ]
     parameters: dict[str, Any] = Field(default_factory=dict)
     reasoning: str = Field(default="")
@@ -74,6 +78,8 @@ class SREState(OpenEnvState):
     fix_applied: bool = False
     resolution_verified: bool = False
     postmortem_written: bool = False
+    severity_classified: bool = False
+    status_page_updated: bool = False
 
 
 # Backward-compatible aliases

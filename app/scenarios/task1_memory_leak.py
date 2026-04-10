@@ -15,6 +15,9 @@ class MemoryLeakScenario(BaseScenario):
     task_id = "task1_memory_leak"
     max_steps = 20
 
+    def _correct_severity(self) -> str:
+        return "SEV2"  # single service OOM — degradation not full outage
+
     def __init__(self, seed: int = 42):
         super().__init__(seed=seed)
         self._correct_service_identified = False
@@ -222,6 +225,14 @@ class MemoryLeakScenario(BaseScenario):
         score += self._postmortem_quality_bonus(
             ["memory", "oom", "leak", "heap", "order-service"]
         )
+
+        # Incident communication bonuses
+        score += self._severity_correct * 0.02
+        score += (self._status_page_updated and self._status_page_before_fix) * 0.02
+
+        # SLO-aware bonus: fix before any SLO breach
+        if self._fix_applied and self._fix_before_any_breach:
+            score += 0.02
 
         # Escalation penalty
         score -= self.hints_used * 0.05

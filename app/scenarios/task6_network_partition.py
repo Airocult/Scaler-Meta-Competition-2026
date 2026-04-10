@@ -21,6 +21,9 @@ class NetworkPartitionScenario(BaseScenario):
     task_id = "task6_network_partition"
     max_steps = 40
 
+    def _correct_severity(self) -> str:
+        return "SEV2"  # data inconsistency, overselling — not full outage
+
     def __init__(self, seed: int = 42):
         super().__init__(seed=seed)
         self._inventory_svc_investigated = False
@@ -387,6 +390,14 @@ class NetworkPartitionScenario(BaseScenario):
             ["partition", "iptables", "split-brain", "stale", "reconcil",
              "deploy-net-001", "10.0.2.30", "10.0.2.50"]
         )
+
+        # Incident communication bonuses
+        score += self._severity_correct * 0.02
+        score += (self._status_page_updated and self._status_page_before_fix) * 0.02
+
+        # SLO-aware bonus
+        if self._fix_applied and self._fix_before_any_breach:
+            score += 0.02
 
         # Penalties
         score -= self._wrong_fix_count * 0.05

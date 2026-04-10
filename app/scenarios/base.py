@@ -10,12 +10,20 @@ Novel mechanics:
     gather broad evidence score higher than those that guess.
   - **Red-herring resilience**: mid-episode distracting alerts test
     whether the agent stays focused on the primary incident.
+  - **Distributed tracing**: `trace_request` action reveals request flow
+    through service graph, exposing root cause via span timing/errors.
+  - **SLO / Error budget**: each service has an SLO target with a finite
+    error budget that burns in real time. Creates observable urgency.
+  - **Incident communication**: `classify_severity` and `update_status_page`
+    test the communication / coordination side of incident response.
 """
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 
 from app.models import Action, Observation, IncidentPhase, ServiceStatus
 from app.data.service_graph import ServiceGraph
+from app.data.slo import create_slo_tracker, ServiceSLO
+from app.data.trace_templates import TraceGenerator
 from app.reward import RewardShaper
 
 
@@ -51,6 +59,19 @@ class BaseScenario(ABC):
         # Services degrade further each step the incident is unresolved
         self._degradation_factor = 0.0  # increases per step
 
+        # ── Novel: SLO / Error budget tracking ────────────────────
+        self._slo_tracker = create_slo_tracker()
+        self._slo_breaches_during_episode: list[str] = []
+        self._fix_before_any_breach = False
+
+        # ── Novel: Incident communication ─────────────────────────
+        self._severity_classified = False
+        self._severity_correct = False
+        self._severity_value: str | None = None
+        self._status_page_updated = False
+        self._status_page_before_fix = False
+        self._status_page_count = 0
+
     def _base_timestamp(self) -> str:
         """Incident start time."""
         return "2026-03-26T03:00:00Z"
@@ -65,6 +86,7 @@ class BaseScenario(ABC):
             "read_logs", "check_metrics", "list_services", "check_alerts",
             "check_deployments", "check_dependencies", "run_diagnostic",
             "apply_fix", "verify_health", "write_postmortem", "escalate",
+            "trace_request", "check_slo", "classify_severity", "update_status_page",
         ]
 
     def _build_observation(self, last_action_result: str) -> Observation:
@@ -100,6 +122,16 @@ class BaseScenario(ABC):
                 f"\n⚠️ DEGRADATION NOTICE: Incident severity increasing. "
                 f"Error rates have risen {self._degradation_factor:.0%} since alert start."
             )
+
+        # ── Novel: SLO burn rate warnings in observations ────────
+        slo_warnings = []
+        for svc_name, slo in self._slo_tracker.items():
+            if slo.breached:
+                slo_warnings.append(f"🔴 SLO BREACH: {slo.status_line()}")
+            elif slo.budget_remaining < 0.50:
+                slo_warnings.append(f"⚠️ SLO ALERT: {slo.status_line()}")
+        if slo_warnings:
+            obs.last_action_result += "\n" + "\n".join(slo_warnings)
 
         # ── Novel: Red-herring alert mid-episode (tests agent focus) ──
         import random as _rng_mod
@@ -169,6 +201,24 @@ class BaseScenario(ABC):
                 0.30, self._degradation_factor + (0.02 * (self.step_count / self.max_steps + 0.5))
             )
 
+    def _advance_slo_burns(self) -> None:
+        """Advance SLO error budget burns based on current service statuses."""
+        statuses = self._get_service_statuses()
+        for svc_name, slo in self._slo_tracker.items():
+            if slo.breached:
+                continue
+            err_rate = statuses.get(svc_name, ServiceStatus(
+                name=svc_name, status="healthy", error_rate=0.01,
+                latency_p99_ms=45, restarts_last_hour=0,
+            )).error_rate
+            slo.advance(err_rate, self.step_count, self.max_steps)
+            if slo.breached and svc_name not in self._slo_breaches_during_episode:
+                self._slo_breaches_during_episode.append(svc_name)
+
+    def _correct_severity(self) -> str:
+        """Override in subclass to set the correct severity for the scenario."""
+        return "SEV2"  # default
+
     def _is_repeated_action(self, action: Action) -> bool:
         if (self._last_action == action.action_type
                 and self._last_params == action.parameters):
@@ -186,11 +236,19 @@ class BaseScenario(ABC):
         # Advance degradation drift (services get worse over time)
         self._advance_degradation()
 
+        # Advance SLO error budget burns
+        self._advance_slo_burns()
+
+        # Track whether fix happens before any SLO breach
+        if not self._fix_applied and not self._slo_breaches_during_episode:
+            self._fix_before_any_breach = True
+
         # Track evidence gathering before fix attempts
         service = action.parameters.get("service", "")
         if action.action_type in ("list_services", "read_logs", "check_metrics",
                                    "check_alerts", "check_deployments",
-                                   "check_dependencies", "run_diagnostic"):
+                                   "check_dependencies", "run_diagnostic",
+                                   "trace_request", "check_slo"):
             self._record_evidence(action.action_type, service)
         if action.action_type == "apply_fix":
             self._fix_attempted = True
@@ -212,6 +270,81 @@ class BaseScenario(ABC):
             if self.step_count >= self.max_steps:
                 self.done = True
             return obs, repeat_penalty, self.done
+
+        # ── Handle base-level actions (new mechanics) ─────────────
+        if action.action_type == "trace_request":
+            service = action.parameters.get("service", "api-gateway")
+            trace_output = TraceGenerator.generate(
+                self.task_id, service, self.seed, step_count=self.step_count
+            )
+            result = f"Distributed trace for request through {service}:\n{trace_output}"
+            reward = self._compute_reward("info_gathered", service=service)
+            obs = self._build_observation(result)
+            if self.step_count >= self.max_steps:
+                self.done = True
+            return obs, reward, self.done
+
+        if action.action_type == "check_slo":
+            lines = ["SLO Status Dashboard:"]
+            for svc_name, slo in self._slo_tracker.items():
+                lines.append(f"  {slo.status_line()}")
+            breaches = [s for s in self._slo_tracker.values() if s.breached]
+            if breaches:
+                lines.append(f"\n🔴 {len(breaches)} SLO(s) breached — prioritize affected services!")
+            else:
+                critical = [s for s in self._slo_tracker.values() if s.budget_remaining < 0.30]
+                if critical:
+                    lines.append(f"\n⚠️ {len(critical)} service(s) at critical error budget — act fast!")
+            result = "\n".join(lines)
+            reward = self._compute_reward("info_gathered", service="slo")
+            obs = self._build_observation(result)
+            if self.step_count >= self.max_steps:
+                self.done = True
+            return obs, reward, self.done
+
+        if action.action_type == "classify_severity":
+            sev = action.parameters.get("severity", "").upper()
+            if sev not in ("SEV1", "SEV2", "SEV3", "SEV4"):
+                result = f"Invalid severity '{sev}'. Must be SEV1, SEV2, SEV3, or SEV4."
+                reward = self._compute_reward("no_effect")
+            else:
+                self._severity_classified = True
+                self._severity_value = sev
+                correct = self._correct_severity()
+                self._severity_correct = (sev == correct)
+                severity_descriptions = {
+                    "SEV1": "Critical — complete service outage or data loss affecting all users",
+                    "SEV2": "Major — significant degradation affecting many users",
+                    "SEV3": "Minor — limited impact, workaround available",
+                    "SEV4": "Low — cosmetic or minor issue, no user impact",
+                }
+                result = (f"Incident classified as {sev}: {severity_descriptions.get(sev, '')}\n"
+                          f"Stakeholders notified. On-call escalation policy activated for {sev}.")
+                reward = self._compute_reward("info_gathered", service="severity")
+            obs = self._build_observation(result)
+            if self.step_count >= self.max_steps:
+                self.done = True
+            return obs, reward, self.done
+
+        if action.action_type == "update_status_page":
+            status = action.parameters.get("status", "investigating")
+            message = action.parameters.get("message", "")
+            if len(message) < 20:
+                result = "Status page update rejected — message must be at least 20 characters."
+                reward = self._compute_reward("no_effect")
+            else:
+                self._status_page_updated = True
+                self._status_page_count += 1
+                if not self._fix_applied:
+                    self._status_page_before_fix = True
+                result = (f"Status page updated ({status}):\n"
+                          f"  \"{message}\"\n"
+                          f"  Visible to customers and stakeholders. Update #{self._status_page_count}.")
+                reward = self._compute_reward("info_gathered", service="status_page")
+            obs = self._build_observation(result)
+            if self.step_count >= self.max_steps:
+                self.done = True
+            return obs, reward, self.done
 
         # Delegate to scenario-specific handler
         obs, reward, done = self._handle_action(action)
@@ -235,6 +368,8 @@ class BaseScenario(ABC):
             "fix_applied": self._fix_applied,
             "resolution_verified": self._resolution_verified,
             "postmortem_written": self._postmortem_written,
+            "severity_classified": self._severity_classified,
+            "status_page_updated": self._status_page_updated,
         }
 
     @abstractmethod

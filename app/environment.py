@@ -91,6 +91,8 @@ class SREBenchEnvironment(Environment[SREAction, SREObservation, SREState]):
             fix_applied=s["fix_applied"],
             resolution_verified=s["resolution_verified"],
             postmortem_written=s["postmortem_written"],
+            severity_classified=s["severity_classified"],
+            status_page_updated=s["status_page_updated"],
         )
 
     # ── Async interface (overrides default sync-wrapping) ─────

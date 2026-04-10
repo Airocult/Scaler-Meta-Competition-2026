@@ -16,6 +16,9 @@ class RaceConditionScenario(BaseScenario):
     task_id = "task3_race_condition"
     max_steps = 40
 
+    def _correct_severity(self) -> str:
+        return "SEV2"  # intermittent errors, partial degradation
+
     def __init__(self, seed: int = 42):
         super().__init__(seed=seed)
         self._error_spike_noticed = False
@@ -284,6 +287,14 @@ class RaceConditionScenario(BaseScenario):
         score += self._postmortem_quality_bonus(
             ["lock_timeout", "race", "config", "redis", "deploy-a1b2c3", "500ms"]
         )
+
+        # Incident communication bonuses
+        score += self._severity_correct * 0.02
+        score += (self._status_page_updated and self._status_page_before_fix) * 0.02
+
+        # SLO-aware bonus
+        if self._fix_applied and self._fix_before_any_breach:
+            score += 0.02
 
         # Escalation penalty (harder on hard task)
         score -= self.hints_used * 0.075

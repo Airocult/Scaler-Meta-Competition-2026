@@ -65,7 +65,8 @@ action_space:
       type: string
       enum: [read_logs, check_metrics, list_services, check_alerts,
              check_deployments, check_dependencies, run_diagnostic,
-             apply_fix, verify_health, write_postmortem, escalate]
+             apply_fix, verify_health, write_postmortem, escalate,
+             trace_request, check_slo, classify_severity, update_status_page]
     - name: parameters
       type: object
       description: Action-specific parameters (service name, time range, fix type, etc.)
@@ -105,8 +106,8 @@ endpoints:
   baseline: POST /baseline
 baseline_scores:
   task1_memory_leak: 0.960
-  task2_db_cascade: 0.932
+  task2_db_cascade: 0.934
   task3_race_condition: 0.900
   task4_dns_failure: 0.860
-  task5_cert_expiry: 0.923
-  task6_network_partition: 0.813
+  task5_cert_expiry: 0.964
+  task6_network_partition: 0.870

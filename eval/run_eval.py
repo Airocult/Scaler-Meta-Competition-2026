@@ -638,6 +638,204 @@ async def eval_reward_signals(client):
 
 
 # ═══════════════════════════════════════════════════════════
+# DISTRIBUTED TRACING TESTS
+# ═══════════════════════════════════════════════════════════
+
+async def eval_trace_request_task1(client):
+    """trace_request returns valid span waterfall for task1."""
+    await reset_task(client, "task1_memory_leak")
+    code, data = await do_step(client, "trace_request", {"service": "api-gateway"})
+    result = data["observation"]["last_action_result"]
+    has_trace = "Trace ID:" in result and "span" in result.lower() or "Service" in result
+    has_anomaly = "OutOfMemoryError" in result or "order-service" in result
+    record("Tracing", "Task1 trace has span waterfall", has_trace, f"len={len(result)}")
+    record("Tracing", "Task1 trace reveals OOM anomaly", has_anomaly, result[:200])
+
+
+async def eval_trace_request_task2(client):
+    """trace_request reveals payment-db pool exhaustion in task2."""
+    await reset_task(client, "task2_db_cascade")
+    code, data = await do_step(client, "trace_request", {"service": "api-gateway"})
+    result = data["observation"]["last_action_result"]
+    has_pool = "pool" in result.lower() or "payment-db" in result
+    record("Tracing", "Task2 trace reveals DB pool issue", has_pool, result[:200])
+
+
+async def eval_trace_request_task6(client):
+    """trace_request reveals network partition in task6."""
+    await reset_task(client, "task6_network_partition")
+    code, data = await do_step(client, "trace_request", {"service": "api-gateway"})
+    result = data["observation"]["last_action_result"]
+    has_partition = "iptables" in result.lower() or "ConnectionTimedOut" in result or "stale_cache" in result
+    record("Tracing", "Task6 trace reveals partition", has_partition, result[:200])
+
+
+async def eval_trace_evidence_tracking(client):
+    """trace_request counts toward evidence breadth."""
+    await reset_task(client, "task1_memory_leak")
+    await do_step(client, "trace_request", {"service": "order-service"})
+    await do_step(client, "list_services")
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+    await do_step(client, "verify_health", {"service": "order-service"})
+    score = await get_grader(client)
+    record("Tracing", "trace_request contributes to evidence breadth", score >= 0.75,
+           f"score={score:.4f}")
+
+
+# ═══════════════════════════════════════════════════════════
+# SLO / ERROR BUDGET TESTS
+# ═══════════════════════════════════════════════════════════
+
+async def eval_check_slo(client):
+    """check_slo returns SLO dashboard with burn rates."""
+    await reset_task(client, "task2_db_cascade")
+    # Do a few steps so SLO burns
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
+    code, data = await do_step(client, "check_slo")
+    result = data["observation"]["last_action_result"]
+    has_slo = "SLO" in result and "budget" in result.lower()
+    record("SLO", "check_slo returns SLO dashboard", has_slo, result[:200])
+
+
+async def eval_slo_burn_visible(client):
+    """SLO warnings appear in observations as budget burns."""
+    await reset_task(client, "task2_db_cascade")
+    # Run several steps to burn error budget
+    for _ in range(8):
+        code, data = await do_step(client, "check_alerts")
+    result = data["observation"]["last_action_result"]
+    has_slo_warning = "SLO" in result
+    record("SLO", "SLO burn warnings visible in observations", has_slo_warning, result[-200:])
+
+
+async def eval_slo_early_fix_bonus(client):
+    """Fixing before SLO breach gives bonus score."""
+    await reset_task(client, "task1_memory_leak")
+    # Quick fix — should be before breach
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+    await do_step(client, "verify_health", {"service": "order-service"})
+    score_fast = await get_grader(client)
+
+    await reset_task(client, "task1_memory_leak")
+    # Slow fix — burn many steps first
+    for _ in range(12):
+        await do_step(client, "check_alerts")
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+    await do_step(client, "verify_health", {"service": "order-service"})
+    score_slow = await get_grader(client)
+
+    record("SLO", "Fast fix scores higher (SLO + time bonus)", score_fast > score_slow,
+           f"fast={score_fast:.4f}, slow={score_slow:.4f}")
+
+
+# ═══════════════════════════════════════════════════════════
+# INCIDENT COMMUNICATION TESTS
+# ═══════════════════════════════════════════════════════════
+
+async def eval_classify_severity_correct(client):
+    """Correct severity classification gives bonus."""
+    await reset_task(client, "task1_memory_leak")
+    code, data = await do_step(client, "classify_severity", {"severity": "SEV2"})
+    result = data["observation"]["last_action_result"]
+    has_classification = "SEV2" in result and "classified" in result.lower()
+    record("Communication", "Correct severity SEV2 accepted", has_classification, result[:150])
+
+    # Now complete and check score includes bonus
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+    await do_step(client, "verify_health", {"service": "order-service"})
+    score = await get_grader(client)
+    record("Communication", "Correct severity adds to score", score >= 0.80,
+           f"score={score:.4f}")
+
+
+async def eval_classify_severity_wrong(client):
+    """Wrong severity classification does not add bonus."""
+    await reset_task(client, "task1_memory_leak")
+    await do_step(client, "classify_severity", {"severity": "SEV4"})  # wrong for task1
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+    await do_step(client, "verify_health", {"service": "order-service"})
+    score_wrong = await get_grader(client)
+
+    await reset_task(client, "task1_memory_leak")
+    await do_step(client, "classify_severity", {"severity": "SEV2"})  # correct
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+    await do_step(client, "verify_health", {"service": "order-service"})
+    score_correct = await get_grader(client)
+
+    record("Communication", "Wrong severity scores lower than correct",
+           score_correct > score_wrong,
+           f"correct={score_correct:.4f}, wrong={score_wrong:.4f}")
+
+
+async def eval_update_status_page(client):
+    """Status page update before fix gives bonus."""
+    await reset_task(client, "task2_db_cascade")
+    await do_step(client, "update_status_page", {
+        "status": "investigating",
+        "message": "We are investigating elevated error rates affecting payment processing."
+    })
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "check_metrics", {"service": "payment-db"})
+    await do_step(client, "apply_fix", {"service": "payment-db", "fix_type": "increase_pool_size"})
+    await do_step(client, "write_postmortem",
+                  {"content": "Root cause: payment-db connection pool exhausted. Fixed by increasing pool size."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Communication", "Status page before fix contributes to score", score >= 0.85,
+           f"score={score:.4f}")
+
+
+async def eval_status_page_short_message(client):
+    """Status page with too-short message is rejected."""
+    await reset_task(client, "task1_memory_leak")
+    code, data = await do_step(client, "update_status_page", {
+        "status": "investigating",
+        "message": "Looking into it"
+    })
+    result = data["observation"]["last_action_result"]
+    record("Communication", "Short status message rejected", "rejected" in result.lower() or "20 char" in result.lower(),
+           result[:150])
+
+
+async def eval_classify_severity_invalid(client):
+    """Invalid severity value is handled gracefully."""
+    await reset_task(client, "task1_memory_leak")
+    code, data = await do_step(client, "classify_severity", {"severity": "CRITICAL"})
+    result = data["observation"]["last_action_result"]
+    record("Communication", "Invalid severity handled", "invalid" in result.lower() or "must be" in result.lower(),
+           result[:150])
+
+
+async def eval_full_communication_flow(client):
+    """Full optimal path with all communication actions maximises score."""
+    await reset_task(client, "task5_cert_expiry")
+    await do_step(client, "list_services")
+    await do_step(client, "check_slo")
+    await do_step(client, "classify_severity", {"severity": "SEV1"})
+    await do_step(client, "update_status_page", {
+        "status": "investigating",
+        "message": "Payment processing affected by TLS certificate issue. Investigating root cause."
+    })
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "trace_request", {"service": "api-gateway"})
+    await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "tls"})
+    await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "renew_cert"})
+    await do_step(client, "update_status_page", {
+        "status": "resolved",
+        "message": "TLS certificate renewed. Payment processing restored. All services healthy."
+    })
+    await do_step(client, "write_postmortem", {
+        "content": "Root cause: payment-service TLS certificate expired 2h ago. Auto-renewal via cert-manager failed due to OOM. Renewed certificate manually. Payment-service SSL and mTLS to payment-db restored."
+    })
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Communication", "Full communication flow (max score)", score >= 0.90,
+           f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════
 
@@ -718,6 +916,28 @@ async def main():
         print("\n── Reward Signal Analysis ──")
         await eval_reward_signals(client)
 
+        # ── Distributed Tracing ───────────────────
+        print("\n── Distributed Tracing ──")
+        await eval_trace_request_task1(client)
+        await eval_trace_request_task2(client)
+        await eval_trace_request_task6(client)
+        await eval_trace_evidence_tracking(client)
+
+        # ── SLO / Error Budget ────────────────────
+        print("\n── SLO / Error Budget ──")
+        await eval_check_slo(client)
+        await eval_slo_burn_visible(client)
+        await eval_slo_early_fix_bonus(client)
+
+        # ── Incident Communication ────────────────
+        print("\n── Incident Communication ──")
+        await eval_classify_severity_correct(client)
+        await eval_classify_severity_wrong(client)
+        await eval_update_status_page(client)
+        await eval_status_page_short_message(client)
+        await eval_classify_severity_invalid(client)
+        t5_full_comm = await eval_full_communication_flow(client)
+
     # ── Summary ────────────────────────────────────
     print("\n" + "=" * 72)
     total = len(results)
@@ -746,6 +966,7 @@ async def main():
     print(f"  Task 4 Max (w/postm):  {t4_max:.4f}")
     print(f"  Task 5 Optimal:        {t5_optimal:.4f}")
     print(f"  Task 5 Max (w/postm):  {t5_max:.4f}")
+    print(f"  Task 5 Full Comm:      {t5_full_comm:.4f}")
     print(f"  Task 6 Optimal:        {t6_optimal:.4f}")
     print(f"  Task 6 Max (w/postm):  {t6_max:.4f}")
     print()
