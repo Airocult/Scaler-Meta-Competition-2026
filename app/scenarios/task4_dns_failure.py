@@ -302,5 +302,4 @@ class DNSFailureScenario(BaseScenario):
         # Escalation penalty
         score -= self.hints_used * 0.05
 
-        epsilon = 1e-4
-        return round(min(1 - epsilon, max(epsilon, score)), 4)
+        return round(min(0.999, max(0.001, score)), 4)

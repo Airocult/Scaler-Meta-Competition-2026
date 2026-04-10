@@ -356,7 +356,8 @@ def run_task(client: OpenAI, task_id: str) -> float:
 
     except Exception as exc:
         print(f"[DEBUG] Task {task_id} exception: {exc}", file=sys.stderr)
-        score = sum(rewards) / max(1, len(rewards)) if rewards else 0.0
+        score = sum(rewards) / max(1, len(rewards)) if rewards else 0.001
+        score = min(max(score, 0.001), 0.999)
         log_end(
             success=False,
             steps=steps_taken,
@@ -365,8 +366,8 @@ def run_task(client: OpenAI, task_id: str) -> float:
         )
         return score
 
-    score = min(max(score, 0.0), 1.0)
-    success = score > 0.0
+    score = min(max(score, 0.001), 0.999)
+    success = score > 0.001
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     return score

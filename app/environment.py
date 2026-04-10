@@ -72,7 +72,7 @@ class SREBenchEnvironment(Environment[SREAction, SREObservation, SREState]):
         obs.reward = step_reward
         obs.step_reward = step_reward
         obs.cumulative_reward = self._scenario.cumulative_reward
-        obs.episode_score = self._scenario.get_grader_score() if done else 0.0
+        obs.episode_score = self._scenario.get_grader_score()
         return obs
 
     @property
