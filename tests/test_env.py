@@ -200,10 +200,14 @@ async def test_tasks_endpoint():
         resp = await client.get("/tasks")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["tasks"]) == 6
+        assert len(data["tasks"]) == 16
         ids = {t["id"] for t in data["tasks"]}
         assert ids == {"task1_memory_leak", "task2_db_cascade", "task3_race_condition",
-                       "task4_dns_failure", "task5_cert_expiry", "task6_network_partition"}
+                       "task4_dns_failure", "task5_cert_expiry", "task6_network_partition",
+                       "task7_kafka_lag", "task8_redis_failover", "task9_disk_full",
+                       "task10_rate_limit", "task11_db_migration_lock", "task12_health_flap",
+                       "task13_pod_eviction", "task14_cascading_timeout",
+                       "task15_secret_rotation", "task16_log_storm"}
 
 # ─── 8b. Task 4 Reset ───────────────────────────────────
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Comprehensive SREBench Evaluation Script
-Tests all 6 tasks across multiple evaluation paths:
+Tests all 16 tasks across multiple evaluation paths:
   - Optimal path (maximum score)
   - Suboptimal paths (partial investigation)
   - Anti-patterns / edge cases (wrong service, repeated actions, escalation)
@@ -504,7 +504,7 @@ async def eval_openenv_endpoints(client):
     # Custom endpoints
     resp = await client.get("/tasks")
     data = resp.json()
-    record("OpenEnv", "/tasks returns 6 tasks", len(data.get("tasks", [])) == 6)
+    record("OpenEnv", "/tasks returns 16 tasks", len(data.get("tasks", [])) == 16)
 
     resp = await client.get("/grader")
     score = resp.json().get("episode_score")
@@ -836,6 +836,345 @@ async def eval_full_communication_flow(client):
 
 
 # ═══════════════════════════════════════════════════════════
+# TASK 7: Kafka Consumer Lag (Medium)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task7_optimal(client):
+    await reset_task(client, "task7_kafka_lag")
+    await do_step(client, "list_services")
+    await do_step(client, "check_metrics", {"service": "order-service"})
+    await do_step(client, "check_deployments", {})
+    await do_step(client, "run_diagnostic", {"service": "order-service", "type": "kafka"})
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "rollback"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task7", "Optimal path", data["done"] and score >= 0.75, f"score={score:.4f}")
+    return score
+
+
+async def eval_task7_max(client):
+    await reset_task(client, "task7_kafka_lag")
+    await do_step(client, "list_services")
+    await do_step(client, "check_slo")
+    await do_step(client, "classify_severity", {"severity": "SEV2"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "Order processing delays. Investigating Kafka consumer lag."})
+    await do_step(client, "check_metrics", {"service": "order-service"})
+    await do_step(client, "check_deployments", {})
+    await do_step(client, "trace_request", {"service": "order-service"})
+    await do_step(client, "run_diagnostic", {"service": "order-service", "type": "kafka"})
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "rollback"})
+    await do_step(client, "update_status_page", {"status": "resolved", "message": "Kafka consumer config restored. Orders processing normally."})
+    await do_step(client, "write_postmortem", {"content": "Root cause: deploy changed kafka session.timeout.ms from 30000 to 3000, causing constant consumer rebalances and lag of 12847 messages. Rolled back deploy."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task7", "Max path (all features)", data["done"] and score >= 0.85, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 8: Redis Sentinel Failover (Medium-Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task8_optimal(client):
+    await reset_task(client, "task8_redis_failover")
+    await do_step(client, "list_services")
+    await do_step(client, "check_metrics", {"service": "inventory-service"})
+    await do_step(client, "read_logs", {"service": "inventory-service"})
+    await do_step(client, "run_diagnostic", {"service": "inventory-service", "type": "redis"})
+    await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "reduce_quorum"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task8", "Optimal path", data["done"] and score >= 0.70, f"score={score:.4f}")
+    return score
+
+
+async def eval_task8_max(client):
+    await reset_task(client, "task8_redis_failover")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV2"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "Inventory service degraded. Redis cache failures."})
+    await do_step(client, "check_metrics", {"service": "inventory-service"})
+    await do_step(client, "read_logs", {"service": "inventory-service"})
+    await do_step(client, "trace_request", {"service": "inventory-service"})
+    await do_step(client, "run_diagnostic", {"service": "inventory-service", "type": "sentinel"})
+    await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "manual_failover"})
+    await do_step(client, "update_status_page", {"status": "resolved", "message": "Redis failover completed. Cache recovering."})
+    await do_step(client, "write_postmortem", {"content": "Root cause: Redis primary and sentinel co-located. When primary died, sentinel quorum dropped to 2/3. Fixed by reducing quorum. Cache rebuilding."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task8", "Max path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 9: Disk Space Exhaustion (Medium)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task9_optimal(client):
+    await reset_task(client, "task9_disk_full")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "auth-service"})
+    await do_step(client, "read_logs", {"service": "user-db"})
+    await do_step(client, "run_diagnostic", {"service": "user-db", "type": "disk"})
+    await do_step(client, "apply_fix", {"service": "user-db", "fix_type": "clean_wal_enable_cron"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task9", "Optimal path", data["done"] and score >= 0.75, f"score={score:.4f}")
+    return score
+
+
+async def eval_task9_max(client):
+    await reset_task(client, "task9_disk_full")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV1"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "Auth service failing. Investigating user-db disk issue."})
+    await do_step(client, "read_logs", {"service": "auth-service"})
+    await do_step(client, "check_metrics", {"service": "user-db"})
+    await do_step(client, "run_diagnostic", {"service": "user-db", "type": "disk"})
+    await do_step(client, "apply_fix", {"service": "user-db", "fix_type": "clean_wal"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: user-db disk full from WAL log accumulation. pg_archivecleanup cron was disabled 2 days ago. Cleaned WAL and re-enabled rotation cron."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task9", "Max path", data["done"] and score >= 0.85, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 10: Rate Limiter Misconfiguration (Medium)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task10_optimal(client):
+    await reset_task(client, "task10_rate_limit")
+    await do_step(client, "list_services")
+    await do_step(client, "check_metrics", {"service": "api-gateway"})
+    await do_step(client, "check_deployments", {})
+    await do_step(client, "run_diagnostic", {"service": "api-gateway", "type": "rate_limit"})
+    await do_step(client, "apply_fix", {"service": "api-gateway", "fix_type": "rollback"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task10", "Optimal path", data["done"] and score >= 0.75, f"score={score:.4f}")
+    return score
+
+
+async def eval_task10_max(client):
+    await reset_task(client, "task10_rate_limit")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV1"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "API returning 429 errors. Investigating rate limiter."})
+    await do_step(client, "check_metrics", {"service": "api-gateway"})
+    await do_step(client, "check_deployments", {})
+    await do_step(client, "run_diagnostic", {"service": "api-gateway", "type": "rate_limit"})
+    await do_step(client, "apply_fix", {"service": "api-gateway", "fix_type": "restore_rate_limit"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: deploy-ratelimit-01 set rate limit to 100 req/s instead of 10000 (missing zero). 90% traffic throttled with 429. Rolled back config."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task10", "Max path", data["done"] and score >= 0.85, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 11: DB Migration Lock (Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task11_optimal(client):
+    await reset_task(client, "task11_db_migration_lock")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "read_logs", {"service": "payment-db"})
+    await do_step(client, "run_diagnostic", {"service": "payment-db", "type": "locks"})
+    await do_step(client, "apply_fix", {"service": "payment-db", "fix_type": "kill_migration"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task11", "Optimal path", data["done"] and score >= 0.70, f"score={score:.4f}")
+    return score
+
+
+async def eval_task11_max(client):
+    await reset_task(client, "task11_db_migration_lock")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV1"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "Payment processing down. Database lock investigation."})
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "check_metrics", {"service": "payment-db"})
+    await do_step(client, "read_logs", {"service": "payment-db"})
+    await do_step(client, "run_diagnostic", {"service": "payment-db", "type": "locks"})
+    await do_step(client, "apply_fix", {"service": "payment-db", "fix_type": "kill_migration"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: DBA ran ALTER TABLE payment_transactions ADD COLUMN during peak hours without lock_timeout. Exclusive lock blocked all writes. Killed migration query."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task11", "Max path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 12: Health Check Flapping (Medium-Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task12_optimal(client):
+    await reset_task(client, "task12_health_flap")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "order-service"})
+    await do_step(client, "check_metrics", {"service": "order-service"})
+    await do_step(client, "run_diagnostic", {"service": "order-service", "type": "health_check"})
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "use_shallow_health_check"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task12", "Optimal path", data["done"] and score >= 0.75, f"score={score:.4f}")
+    return score
+
+
+async def eval_task12_max(client):
+    await reset_task(client, "task12_health_flap")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV2"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "order-service instances flapping. Health check investigation."})
+    await do_step(client, "read_logs", {"service": "order-service"})
+    await do_step(client, "check_metrics", {"service": "order-service"})
+    await do_step(client, "trace_request", {"service": "order-service"})
+    await do_step(client, "run_diagnostic", {"service": "order-service", "type": "health_check"})
+    await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "simplify_health_check"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: order-service /health/deep endpoint called inventory-service which had GC pauses up to 1200ms. Health check timeout 2000ms intermittently exceeded. Switched to shallow health check."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task12", "Max path", data["done"] and score >= 0.85, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 13: Pod Eviction Storm (Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task13_optimal(client):
+    await reset_task(client, "task13_pod_eviction")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "check_alerts")
+    await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "kubernetes"})
+    await do_step(client, "apply_fix", {"fix_type": "delete_batch_job"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task13", "Optimal path", data["done"] and score >= 0.70, f"score={score:.4f}")
+    return score
+
+
+async def eval_task13_max(client):
+    await reset_task(client, "task13_pod_eviction")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV1"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "Payment service pods evicted. Investigating node pressure."})
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "check_alerts")
+    await do_step(client, "check_deployments", {})
+    await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "kubernetes"})
+    await do_step(client, "apply_fix", {"fix_type": "delete_batch_job"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: daily-report-generator DaemonSet deployed without resource limits, consuming 12GB/node. payment-service BestEffort QoS evicted first under memory pressure. Deleted batch job."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task13", "Max path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 14: Cascading Timeout (Medium-Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task14_optimal(client):
+    await reset_task(client, "task14_cascading_timeout")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "api-gateway"})
+    await do_step(client, "check_metrics", {"service": "inventory-service"})
+    await do_step(client, "run_diagnostic", {"service": "inventory-service", "type": "query"})
+    await do_step(client, "apply_fix", {"fix_type": "recreate_index"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task14", "Optimal path", data["done"] and score >= 0.70, f"score={score:.4f}")
+    return score
+
+
+async def eval_task14_max(client):
+    await reset_task(client, "task14_cascading_timeout")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV2"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "504 errors on order endpoints. Investigating timeout chain."})
+    await do_step(client, "read_logs", {"service": "api-gateway"})
+    await do_step(client, "read_logs", {"service": "inventory-service"})
+    await do_step(client, "trace_request", {"service": "api-gateway"})
+    await do_step(client, "run_diagnostic", {"service": "inventory-service", "type": "query"})
+    await do_step(client, "apply_fix", {"fix_type": "recreate_index"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: missing index on inventory.sku dropped during nightly maintenance. 25s queries combined with timeout hierarchy mismatch (gateway 10s < order 30s) caused user-facing 504 errors."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task14", "Max path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 15: Secret Rotation Failure (Medium)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task15_optimal(client):
+    await reset_task(client, "task15_secret_rotation")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "secrets"})
+    await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "restart"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task15", "Optimal path", data["done"] and score >= 0.75, f"score={score:.4f}")
+    return score
+
+
+async def eval_task15_max(client):
+    await reset_task(client, "task15_secret_rotation")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV1"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "All payments failing. Investigating 401 errors."})
+    await do_step(client, "read_logs", {"service": "payment-service"})
+    await do_step(client, "check_metrics", {"service": "payment-service"})
+    await do_step(client, "run_diagnostic", {"service": "payment-service", "type": "secrets"})
+    await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "reload_secrets"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: Vault rotated payment-api-key from v2 to v3 but payment-service has no hot-reload. Old key revoked, all API calls return 401. Restarted service to pick up v3."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task15", "Max path", data["done"] and score >= 0.85, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
+# TASK 16: Debug Log Storm (Hard)
+# ═══════════════════════════════════════════════════════════
+
+async def eval_task16_optimal(client):
+    await reset_task(client, "task16_log_storm")
+    await do_step(client, "list_services")
+    await do_step(client, "check_metrics", {"service": "auth-service"})
+    await do_step(client, "check_deployments", {})
+    await do_step(client, "run_diagnostic", {"service": "auth-service", "type": "logging"})
+    await do_step(client, "apply_fix", {"service": "auth-service", "fix_type": "rollback"})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task16", "Optimal path", data["done"] and score >= 0.70, f"score={score:.4f}")
+    return score
+
+
+async def eval_task16_max(client):
+    await reset_task(client, "task16_log_storm")
+    await do_step(client, "list_services")
+    await do_step(client, "classify_severity", {"severity": "SEV2"})
+    await do_step(client, "update_status_page", {"status": "investigating", "message": "Logging pipeline saturated. auth-service CPU spiked. Investigating."})
+    await do_step(client, "check_metrics", {"service": "auth-service"})
+    await do_step(client, "check_deployments", {})
+    await do_step(client, "read_logs", {"service": "auth-service"})
+    await do_step(client, "run_diagnostic", {"service": "auth-service", "type": "logging"})
+    await do_step(client, "apply_fix", {"service": "auth-service", "fix_type": "set_log_level_info"})
+    await do_step(client, "write_postmortem", {"content": "Root cause: deploy-auth-debug accidentally set LOG_LEVEL=DEBUG in production (meant for staging). 50GB/hr of debug logs saturated shared logging pipeline. auth-service CPU 95%. Rolled back log level."})
+    code, data = await do_step(client, "verify_health")
+    score = await get_grader(client)
+    record("Task16", "Max path", data["done"] and score >= 0.80, f"score={score:.4f}")
+    return score
+
+
+# ═══════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════
 
@@ -938,6 +1277,56 @@ async def main():
         await eval_classify_severity_invalid(client)
         t5_full_comm = await eval_full_communication_flow(client)
 
+        # ── Task 7 ─────────────────────────────────
+        print("\n── Task 7: Kafka Consumer Lag (Medium) ──")
+        t7_optimal = await eval_task7_optimal(client)
+        t7_max = await eval_task7_max(client)
+
+        # ── Task 8 ─────────────────────────────────
+        print("\n── Task 8: Redis Sentinel Failover (Medium-Hard) ──")
+        t8_optimal = await eval_task8_optimal(client)
+        t8_max = await eval_task8_max(client)
+
+        # ── Task 9 ─────────────────────────────────
+        print("\n── Task 9: Disk Space Exhaustion (Medium) ──")
+        t9_optimal = await eval_task9_optimal(client)
+        t9_max = await eval_task9_max(client)
+
+        # ── Task 10 ────────────────────────────────
+        print("\n── Task 10: Rate Limiter Misconfiguration (Medium) ──")
+        t10_optimal = await eval_task10_optimal(client)
+        t10_max = await eval_task10_max(client)
+
+        # ── Task 11 ────────────────────────────────
+        print("\n── Task 11: DB Migration Lock (Hard) ──")
+        t11_optimal = await eval_task11_optimal(client)
+        t11_max = await eval_task11_max(client)
+
+        # ── Task 12 ────────────────────────────────
+        print("\n── Task 12: Health Check Flapping (Medium-Hard) ──")
+        t12_optimal = await eval_task12_optimal(client)
+        t12_max = await eval_task12_max(client)
+
+        # ── Task 13 ────────────────────────────────
+        print("\n── Task 13: Pod Eviction Storm (Hard) ──")
+        t13_optimal = await eval_task13_optimal(client)
+        t13_max = await eval_task13_max(client)
+
+        # ── Task 14 ────────────────────────────────
+        print("\n── Task 14: Cascading Timeout (Medium-Hard) ──")
+        t14_optimal = await eval_task14_optimal(client)
+        t14_max = await eval_task14_max(client)
+
+        # ── Task 15 ────────────────────────────────
+        print("\n── Task 15: Secret Rotation (Medium) ──")
+        t15_optimal = await eval_task15_optimal(client)
+        t15_max = await eval_task15_max(client)
+
+        # ── Task 16 ────────────────────────────────
+        print("\n── Task 16: Log Storm (Hard) ──")
+        t16_optimal = await eval_task16_optimal(client)
+        t16_max = await eval_task16_max(client)
+
     # ── Summary ────────────────────────────────────
     print("\n" + "=" * 72)
     total = len(results)
@@ -969,9 +1358,33 @@ async def main():
     print(f"  Task 5 Full Comm:      {t5_full_comm:.4f}")
     print(f"  Task 6 Optimal:        {t6_optimal:.4f}")
     print(f"  Task 6 Max (w/postm):  {t6_max:.4f}")
+    print(f"  Task 7 Optimal:        {t7_optimal:.4f}")
+    print(f"  Task 7 Max:            {t7_max:.4f}")
+    print(f"  Task 8 Optimal:        {t8_optimal:.4f}")
+    print(f"  Task 8 Max:            {t8_max:.4f}")
+    print(f"  Task 9 Optimal:        {t9_optimal:.4f}")
+    print(f"  Task 9 Max:            {t9_max:.4f}")
+    print(f"  Task 10 Optimal:       {t10_optimal:.4f}")
+    print(f"  Task 10 Max:           {t10_max:.4f}")
+    print(f"  Task 11 Optimal:       {t11_optimal:.4f}")
+    print(f"  Task 11 Max:           {t11_max:.4f}")
+    print(f"  Task 12 Optimal:       {t12_optimal:.4f}")
+    print(f"  Task 12 Max:           {t12_max:.4f}")
+    print(f"  Task 13 Optimal:       {t13_optimal:.4f}")
+    print(f"  Task 13 Max:           {t13_max:.4f}")
+    print(f"  Task 14 Optimal:       {t14_optimal:.4f}")
+    print(f"  Task 14 Max:           {t14_max:.4f}")
+    print(f"  Task 15 Optimal:       {t15_optimal:.4f}")
+    print(f"  Task 15 Max:           {t15_max:.4f}")
+    print(f"  Task 16 Optimal:       {t16_optimal:.4f}")
+    print(f"  Task 16 Max:           {t16_max:.4f}")
     print()
-    all_optimal = [t1_optimal, t2_optimal, t3_optimal, t4_optimal, t5_optimal, t6_optimal]
-    all_max = [t1_max, t2_max, t3_max, t4_max, t5_max, t6_max]
+    all_optimal = [t1_optimal, t2_optimal, t3_optimal, t4_optimal, t5_optimal, t6_optimal,
+                   t7_optimal, t8_optimal, t9_optimal, t10_optimal, t11_optimal, t12_optimal,
+                   t13_optimal, t14_optimal, t15_optimal, t16_optimal]
+    all_max = [t1_max, t2_max, t3_max, t4_max, t5_max, t6_max,
+               t7_max, t8_max, t9_max, t10_max, t11_max, t12_max,
+               t13_max, t14_max, t15_max, t16_max]
     print(f"  Average optimal:       {sum(all_optimal) / len(all_optimal):.4f}")
     print(f"  Average max:           {sum(all_max) / len(all_max):.4f}")
 

@@ -58,6 +58,96 @@ tasks:
       cached data causing overselling. Agent must identify the partition,
       rollback the network change, reconcile stale data, and verify
       consistency.
+  - id: task7_kafka_lag
+    name: Kafka Consumer Lag Storm
+    difficulty: medium
+    max_steps: 25
+    description: >
+      order-service Kafka consumer is in a rebalance loop after a deploy
+      changed session.timeout.ms from 30s to 3s. Consumer lag growing,
+      order processing delayed 40s+. Agent must identify the config change,
+      rollback the deploy, and verify consumer catches up.
+  - id: task8_redis_failover
+    name: Redis Sentinel Failover Failure
+    difficulty: medium-hard
+    max_steps: 30
+    description: >
+      inventory-service Redis primary node failed but Sentinel cannot
+      promote a replica (quorum=3, only 2 sentinels alive). Cache miss
+      storm overwhelms inventory-db. Agent must diagnose sentinel config,
+      fix quorum or force failover, and verify cache recovery.
+  - id: task9_disk_full
+    name: Database Disk Space Exhaustion
+    difficulty: medium
+    max_steps: 25
+    description: >
+      user-db disk is 100% full from WAL log accumulation after archival
+      cron was disabled. auth-service login queries fail. Agent must trace
+      auth failures to disk issue, clean WAL, re-enable rotation, and
+      verify auth recovery.
+  - id: task10_rate_limit
+    name: Rate Limiter Misconfiguration
+    difficulty: medium
+    max_steps: 25
+    description: >
+      api-gateway rate limiter set to 100 req/s instead of 10000 req/s
+      (typo in deploy). 90% of legitimate traffic throttled with 429.
+      Agent must identify the deploy, rollback the config, and verify
+      traffic flow.
+  - id: task11_db_migration_lock
+    name: Database Migration Table Lock
+    difficulty: hard
+    max_steps: 35
+    description: >
+      DBA ran ALTER TABLE on payment_transactions during peak hours
+      without lock_timeout. Exclusive lock blocks all writes for 12+
+      minutes. Agent must identify the blocking query, kill the migration,
+      and verify payment recovery.
+  - id: task12_health_flap
+    name: Load Balancer Health Check Flapping
+    difficulty: medium-hard
+    max_steps: 30
+    description: >
+      order-service instances flap in/out of load balancer because the
+      deep health check calls a slow inventory-service (GC pauses).
+      Agent must identify the deep check dependency, switch to shallow
+      health check, and verify stability.
+  - id: task13_pod_eviction
+    name: Kubernetes Pod Eviction Storm
+    difficulty: hard
+    max_steps: 35
+    description: >
+      Noisy neighbor batch job (DaemonSet without resource limits)
+      consumes all node memory, causing Kubernetes to evict payment-service
+      pods. Agent must identify the batch job, remove/limit it, and
+      verify payment pods reschedule.
+  - id: task14_cascading_timeout
+    name: Cascading Timeout Chain
+    difficulty: medium-hard
+    max_steps: 30
+    description: >
+      inventory-service has a missing index causing 25s queries. Timeout
+      hierarchy mismatch (api-gateway 10s < order-service 30s) causes
+      504 errors despite eventual completion. Agent must identify missing
+      index, recreate it, and verify latency recovery.
+  - id: task15_secret_rotation
+    name: Secret Rotation Failure
+    difficulty: medium
+    max_steps: 25
+    description: >
+      payment-service API key rotated in Vault but service not restarted
+      to pick up new key. All payments fail with 401 from external
+      gateway. Agent must identify stale key, restart/reload service,
+      and verify payment processing.
+  - id: task16_log_storm
+    name: Debug Log Storm Pipeline Saturation
+    difficulty: hard
+    max_steps: 35
+    description: >
+      Deploy to auth-service set LOG_LEVEL=DEBUG (meant for staging).
+      50GB/hr of debug logs saturate shared logging pipeline. auth-service
+      CPU at 95% from serialization. Agent must identify the deploy,
+      rollback log level, and verify pipeline recovery.
 action_space:
   type: object
   fields:
@@ -111,3 +201,13 @@ baseline_scores:
   task4_dns_failure: 0.860
   task5_cert_expiry: 0.964
   task6_network_partition: 0.870
+  task7_kafka_lag: 0.880
+  task8_redis_failover: 0.850
+  task9_disk_full: 0.890
+  task10_rate_limit: 0.900
+  task11_db_migration_lock: 0.830
+  task12_health_flap: 0.860
+  task13_pod_eviction: 0.840
+  task14_cascading_timeout: 0.850
+  task15_secret_rotation: 0.900
+  task16_log_storm: 0.830

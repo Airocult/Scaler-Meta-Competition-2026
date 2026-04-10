@@ -15,6 +15,16 @@ from app.scenarios.task3_race_condition import RaceConditionScenario
 from app.scenarios.task4_dns_failure import DNSFailureScenario
 from app.scenarios.task5_cert_expiry import CertExpiryScenario
 from app.scenarios.task6_network_partition import NetworkPartitionScenario
+from app.scenarios.task7_kafka_lag import KafkaLagScenario
+from app.scenarios.task8_redis_failover import RedisFailoverScenario
+from app.scenarios.task9_disk_full import DiskFullScenario
+from app.scenarios.task10_rate_limit import RateLimitScenario
+from app.scenarios.task11_db_migration_lock import DbMigrationLockScenario
+from app.scenarios.task12_health_flap import HealthFlapScenario
+from app.scenarios.task13_pod_eviction import PodEvictionScenario
+from app.scenarios.task14_cascading_timeout import CascadingTimeoutScenario
+from app.scenarios.task15_secret_rotation import SecretRotationScenario
+from app.scenarios.task16_log_storm import LogStormScenario
 
 
 SCENARIO_MAP: dict[str, type[BaseScenario]] = {
@@ -24,6 +34,16 @@ SCENARIO_MAP: dict[str, type[BaseScenario]] = {
     "task4_dns_failure": DNSFailureScenario,
     "task5_cert_expiry": CertExpiryScenario,
     "task6_network_partition": NetworkPartitionScenario,
+    "task7_kafka_lag": KafkaLagScenario,
+    "task8_redis_failover": RedisFailoverScenario,
+    "task9_disk_full": DiskFullScenario,
+    "task10_rate_limit": RateLimitScenario,
+    "task11_db_migration_lock": DbMigrationLockScenario,
+    "task12_health_flap": HealthFlapScenario,
+    "task13_pod_eviction": PodEvictionScenario,
+    "task14_cascading_timeout": CascadingTimeoutScenario,
+    "task15_secret_rotation": SecretRotationScenario,
+    "task16_log_storm": LogStormScenario,
 }
 
 

@@ -39,6 +39,16 @@ TASKS = [
     "task4_dns_failure",
     "task5_cert_expiry",
     "task6_network_partition",
+    "task7_kafka_lag",
+    "task8_redis_failover",
+    "task9_disk_full",
+    "task10_rate_limit",
+    "task11_db_migration_lock",
+    "task12_health_flap",
+    "task13_pod_eviction",
+    "task14_cascading_timeout",
+    "task15_secret_rotation",
+    "task16_log_storm",
 ]
 
 MAX_STEPS_MAP = {
@@ -48,6 +58,16 @@ MAX_STEPS_MAP = {
     "task4_dns_failure": 25,
     "task5_cert_expiry": 35,
     "task6_network_partition": 40,
+    "task7_kafka_lag": 25,
+    "task8_redis_failover": 30,
+    "task9_disk_full": 25,
+    "task10_rate_limit": 25,
+    "task11_db_migration_lock": 35,
+    "task12_health_flap": 30,
+    "task13_pod_eviction": 35,
+    "task14_cascading_timeout": 30,
+    "task15_secret_rotation": 25,
+    "task16_log_storm": 35,
 }
 
 SYSTEM_PROMPT = """You are an expert SRE on-call engineer debugging a production incident.
