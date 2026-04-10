@@ -17,10 +17,14 @@ from typing import List, Optional
 import httpx
 from openai import OpenAI
 
-# ── Mandatory environment variables ──────────────────────────────────────────
+# ── Set these in your system or .env file ────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
+HF_TOKEN = os.getenv("HF_TOKEN")
+API_KEY = HF_TOKEN or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
+
+# Optional (for local Docker deployment)
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 # SREBench Space URL
 SPACE_URL = os.getenv("SREBENCH_URL", "https://neuralninja110-srebench.hf.space")
