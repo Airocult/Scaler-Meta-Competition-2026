@@ -1108,9 +1108,9 @@ python -m eval.run_eval
 
 | Member | Role |
 |---|---|
-| **Rahul Ashok** | Environment Design & Scenario Engineering |
-| **Pritham Devaprasad** | Baseline Agent & System Prompt Optimization |
-| **Siddarth S** | Infrastructure, Deployment & Validation |
+| **Rahul Ashok** 
+| **Pritham Devaprasad** 
+| **Siddarth S** 
 
 ---
 
@@ -1119,10 +1119,3 @@ python -m eval.run_eval
 MIT License — see [LICENSE](LICENSE) for details.
 
 ---
-
-<p align="center">
-  <b>Built for the Scaler Meta Competition 2026</b>
-  <br/>
-  <i>Evaluating AI's ability to keep production systems running</i>
-</p>
-| task3_race_condition | nemotron-3-super-120b | 0.38 |
