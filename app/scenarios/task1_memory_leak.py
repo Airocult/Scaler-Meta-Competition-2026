@@ -138,7 +138,6 @@ class MemoryLeakScenario(BaseScenario):
 
             if service == "order-service":
                 self._correct_service_identified = True
-                self._root_cause_identified = True
                 if fix_type == "restart":
                     self._fix_applied_correctly = True
                     self._fix_applied = True

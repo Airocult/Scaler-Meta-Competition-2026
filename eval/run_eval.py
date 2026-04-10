@@ -76,12 +76,14 @@ async def eval_task1_optimal(client):
 
 
 async def eval_task1_minimal(client):
-    """Minimal path: skip investigation, go straight to fix + verify."""
+    """Minimal investigation path: bare minimum investigation → fix → verify."""
     await reset_task(client, "task1_memory_leak")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     code, data = await do_step(client, "verify_health", {"service": "order-service"})
     score = await get_grader(client)
-    record("Task1", "Minimal path (skip investigation)", data["done"] and score >= 0.70, f"score={score:.4f}")
+    record("Task1", "Minimal path (light investigation)", data["done"] and score >= 0.70, f"score={score:.4f}")
     return score
 
 
@@ -89,6 +91,7 @@ async def eval_task1_with_postmortem(client):
     """Optimal + postmortem for maximum score (postmortem BEFORE verify — verify ends episode)."""
     await reset_task(client, "task1_memory_leak")
     await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+    await do_step(client, "read_logs", {"service": "order-service"})
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "write_postmortem",
                   {"content": "Root cause: order-service OOM Kill due to memory leak in the heap. Fixed by restarting the service. Memory usage was at 98% before restart."})
@@ -101,6 +104,8 @@ async def eval_task1_with_postmortem(client):
 async def eval_task1_wrong_service(client):
     """Fix wrong service — should get penalty."""
     await reset_task(client, "task1_memory_leak")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     code, data = await do_step(client, "apply_fix", {"service": "auth-service", "fix_type": "restart"})
     reward = data["reward"]
     score = await get_grader(client)
@@ -122,7 +127,9 @@ async def eval_task1_escalation(client):
     await reset_task(client, "task1_memory_leak")
     code, data = await do_step(client, "escalate")
     record("Task1", "Escalation penalty", data["reward"] < 0, f"reward={data['reward']:.4f}")
-    # Now fix correctly
+    # Investigate enough to unlock fix, then fix correctly
+    await do_step(client, "list_services")
+    await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "verify_health", {"service": "order-service"})
     score = await get_grader(client)
@@ -188,6 +195,8 @@ async def eval_task2_with_postmortem(client):
 async def eval_task2_surface_fix_trap(client):
     """Fix api-gateway (surface symptom) — grader caps at 0.35."""
     await reset_task(client, "task2_db_cascade")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "api-gateway", "fix_type": "restart"})
     score = await get_grader(client)
     record("Task2", "Surface fix trap (cap 0.35)", score <= 0.35, f"score={score:.4f}")
@@ -209,6 +218,7 @@ async def eval_task2_drain_pool(client):
     """Alternative fix: drain_pool instead of increase_pool_size."""
     await reset_task(client, "task2_db_cascade")
     await do_step(client, "check_metrics", {"service": "payment-db"})
+    await do_step(client, "read_logs", {"service": "payment-service"})
     await do_step(client, "apply_fix", {"service": "payment-db", "fix_type": "drain_pool"})
     code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
@@ -218,6 +228,8 @@ async def eval_task2_drain_pool(client):
 async def eval_task2_wrong_then_correct(client):
     """Fix wrong surface first, then correct fix — cap still applies."""
     await reset_task(client, "task2_db_cascade")
+    await do_step(client, "list_services")
+    await do_step(client, "check_metrics", {"service": "api-gateway"})
     await do_step(client, "apply_fix", {"service": "api-gateway", "fix_type": "restart"})
     await do_step(client, "check_metrics", {"service": "payment-db"})
     await do_step(client, "apply_fix", {"service": "payment-db", "fix_type": "increase_pool_size"})
@@ -262,6 +274,7 @@ async def eval_task3_restart_trap(client):
     """Restart >2 times without checking deploys — dead-end penalty."""
     await reset_task(client, "task3_race_condition")
     await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "restart"})
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "apply_fix", {"service": "api-gateway", "fix_type": "restart"})
@@ -292,6 +305,7 @@ async def eval_task3_partial_investigation(client):
 async def eval_task3_rollback_config(client):
     """Use rollback_config instead of rollback."""
     await reset_task(client, "task3_race_condition")
+    await do_step(client, "check_metrics", {"service": "inventory-service", "metric": "error_rate"})
     await do_step(client, "check_deployments", {"service": "inventory-service"})
     await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "rollback_config", "deploy_id": "deploy-a1b2c3"})
     code, data = await do_step(client, "verify_health")
@@ -333,15 +347,19 @@ async def eval_task4_with_postmortem(client):
 async def eval_task4_wrong_service(client):
     """Fix wrong service — no effect."""
     await reset_task(client, "task4_dns_failure")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "api-gateway", "fix_type": "restart"})
     score = await get_grader(client)
-    record("Task4", "Wrong service fix", score <= 0.10, f"score={score:.4f}")
+    record("Task4", "Wrong service fix", score <= 0.15, f"score={score:.4f}")
 
 
 async def eval_task4_escalation(client):
     """Use escalation hint then fix correctly."""
     await reset_task(client, "task4_dns_failure")
     await do_step(client, "escalate")
+    await do_step(client, "list_services")
+    await do_step(client, "read_logs", {"service": "auth-service"})
     await do_step(client, "apply_fix", {"service": "auth-service", "fix_type": "flush_dns"})
     code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
@@ -383,6 +401,8 @@ async def eval_task5_with_postmortem(client):
 async def eval_task5_restart_trap(client):
     """Restart payment-service without renewing cert — doesn't fix."""
     await reset_task(client, "task5_cert_expiry")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "payment-service", "fix_type": "restart"})
     score = await get_grader(client)
     record("Task5", "Restart trap (cert still expired)", score <= 0.15, f"score={score:.4f}")
@@ -391,9 +411,11 @@ async def eval_task5_restart_trap(client):
 async def eval_task5_wrong_service(client):
     """Fix order-service (victim) — wrong."""
     await reset_task(client, "task5_cert_expiry")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     score = await get_grader(client)
-    record("Task5", "Wrong service (order-service)", score <= 0.10, f"score={score:.4f}")
+    record("Task5", "Wrong service (order-service)", score <= 0.15, f"score={score:.4f}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -433,6 +455,8 @@ async def eval_task6_with_postmortem(client):
 async def eval_task6_partial_fix(client):
     """Fix network but skip data reconciliation."""
     await reset_task(client, "task6_network_partition")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"fix_type": "rollback_deploy"})
     code, data = await do_step(client, "verify_health")
     score = await get_grader(client)
@@ -443,17 +467,21 @@ async def eval_task6_partial_fix(client):
 async def eval_task6_restart_trap(client):
     """Restart inventory-service without fixing network — still fails."""
     await reset_task(client, "task6_network_partition")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "restart"})
     score = await get_grader(client)
-    record("Task6", "Restart trap (network still partitioned)", score <= 0.10, f"score={score:.4f}")
+    record("Task6", "Restart trap (network still partitioned)", score <= 0.15, f"score={score:.4f}")
 
 
 async def eval_task6_reconcile_before_network(client):
     """Try to reconcile data before fixing network — fails."""
     await reset_task(client, "task6_network_partition")
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "inventory-service", "fix_type": "reconcile_data"})
     score = await get_grader(client)
-    record("Task6", "Reconcile before network fix (no effect)", score <= 0.10, f"score={score:.4f}")
+    record("Task6", "Reconcile before network fix (no effect)", score <= 0.20, f"score={score:.4f}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -712,15 +740,18 @@ async def eval_slo_burn_visible(client):
 async def eval_slo_early_fix_bonus(client):
     """Fixing before SLO breach gives bonus score."""
     await reset_task(client, "task1_memory_leak")
-    # Quick fix — should be before breach
+    # Quick investigation + fix — should be before breach
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "verify_health", {"service": "order-service"})
     score_fast = await get_grader(client)
 
     await reset_task(client, "task1_memory_leak")
-    # Slow fix — burn many steps first
+    # Slow fix — burn many steps first (check_alerts counts as evidence)
     for _ in range(12):
         await do_step(client, "check_alerts")
+    await do_step(client, "list_services")
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "verify_health", {"service": "order-service"})
     score_slow = await get_grader(client)
@@ -741,7 +772,9 @@ async def eval_classify_severity_correct(client):
     has_classification = "SEV2" in result and "classified" in result.lower()
     record("Communication", "Correct severity SEV2 accepted", has_classification, result[:150])
 
-    # Now complete and check score includes bonus
+    # Now investigate + complete and check score includes bonus
+    await do_step(client, "read_logs", {"service": "order-service"})
+    await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "verify_health", {"service": "order-service"})
     score = await get_grader(client)
@@ -753,12 +786,16 @@ async def eval_classify_severity_wrong(client):
     """Wrong severity classification does not add bonus."""
     await reset_task(client, "task1_memory_leak")
     await do_step(client, "classify_severity", {"severity": "SEV4"})  # wrong for task1
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "verify_health", {"service": "order-service"})
     score_wrong = await get_grader(client)
 
     await reset_task(client, "task1_memory_leak")
     await do_step(client, "classify_severity", {"severity": "SEV2"})  # correct
+    await do_step(client, "list_services")
+    await do_step(client, "check_alerts")
     await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
     await do_step(client, "verify_health", {"service": "order-service"})
     score_correct = await get_grader(client)

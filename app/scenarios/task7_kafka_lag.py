@@ -182,7 +182,6 @@ class KafkaLagScenario(BaseScenario):
                     "increase_session_timeout", "restore_session_timeout"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._order_service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: order-service Kafka config restored.\n"

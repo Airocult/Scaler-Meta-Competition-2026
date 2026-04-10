@@ -127,6 +127,10 @@ async def test_task1_wrong_service_penalty():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         await reset_task(client, "task1_memory_leak")
 
+        # Investigate enough to unlock fix attempts
+        await do_step(client, "list_services")
+        await do_step(client, "check_alerts")
+
         result = await do_step(client, "apply_fix",
                                {"service": "auth-service", "fix_type": "restart"},
                                "Applying fix to auth-service to test wrong service penalty")
@@ -142,7 +146,9 @@ async def test_task2_naive_fix_capped():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         await reset_task(client, "task2_db_cascade")
 
-        # Directly fix api-gateway (wrong)
+        # Investigate then fix wrong service
+        await do_step(client, "list_services")
+        await do_step(client, "check_alerts")
         await do_step(client, "apply_fix",
                       {"service": "api-gateway", "fix_type": "restart"},
                       "Restarting api-gateway directly without tracing root cause")

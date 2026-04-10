@@ -176,7 +176,6 @@ class DbMigrationLockScenario(BaseScenario):
                     "pg_cancel_backend", "kill_query", "terminate_alter"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: ALTER TABLE migration cancelled (pid 8234).\n"
@@ -188,7 +187,6 @@ class DbMigrationLockScenario(BaseScenario):
                 return self._build_observation(result), self._compute_reward("fix_applied_correctly"), False
             elif fix_type == "restart":
                 result = f"Restart {service} — this would terminate ALL connections. Migration PID 8234 killed along with all active queries. Recovery slow."
-                self._correct_fix_applied = True  # works but destructive
                 self._fix_applied = True
                 self._service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING

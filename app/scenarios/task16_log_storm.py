@@ -185,7 +185,6 @@ class LogStormScenario(BaseScenario):
                     "set_log_level_info", "restore_log_level", "disable_debug_logging"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: auth-service LOG_LEVEL restored to INFO.\n"

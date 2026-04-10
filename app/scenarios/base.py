@@ -55,6 +55,10 @@ class BaseScenario(ABC):
         self._evidence_sources: set[str] = set()
         self._fix_attempted = False  # True once first apply_fix is called
 
+        # ── Investigation gating ──────────────────────────────────
+        # Minimum distinct evidence sources required before apply_fix is accepted
+        self._min_evidence_required = 2
+
         # ── Novel: Degradation drift ──────────────────────────────
         # Services degrade further each step the incident is unresolved
         self._degradation_factor = 0.0  # increases per step
@@ -166,9 +170,9 @@ class BaseScenario(ABC):
 
     def _evidence_breadth_score(self) -> float:
         """Bonus for investigating multiple distinct sources before fixing.
-        0 sources = 0.0, 1 = 0.01, 2 = 0.02, 3+ = 0.03 (max)"""
+        0 sources = 0.0, 1 = 0.02, 2 = 0.04, 3 = 0.06, 4+ = 0.08 (max)"""
         n = len(self._evidence_sources)
-        return min(n * 0.01, 0.03)
+        return min(n * 0.02, 0.08)
 
     def _postmortem_quality_bonus(self, keywords: list[str]) -> float:
         """Score postmortem content for mentioning root-cause keywords.
@@ -177,7 +181,7 @@ class BaseScenario(ABC):
         we evaluate whether the postmortem content demonstrates understanding
         of the root cause by checking for domain-specific keywords.
 
-        Returns 0.0–0.04 based on keyword coverage.
+        Returns 0.0–0.06 based on keyword coverage.
         """
         if not self._postmortem_written:
             return 0.0
@@ -192,7 +196,7 @@ class BaseScenario(ABC):
         # Score based on keyword coverage
         matches = sum(1 for kw in keywords if kw.lower() in content)
         coverage = matches / max(len(keywords), 1)
-        return round(min(coverage * 0.04, 0.04), 4)
+        return round(min(coverage * 0.06, 0.06), 4)
 
     def _advance_degradation(self) -> None:
         """Worsen service health each step the incident is unresolved."""
@@ -341,6 +345,22 @@ class BaseScenario(ABC):
                           f"  \"{message}\"\n"
                           f"  Visible to customers and stakeholders. Update #{self._status_page_count}.")
                 reward = self._compute_reward("info_gathered", service="status_page")
+            obs = self._build_observation(result)
+            if self.step_count >= self.max_steps:
+                self.done = True
+            return obs, reward, self.done
+
+        # ── Investigation gating: reject apply_fix without sufficient evidence ──
+        if action.action_type == "apply_fix" and len(self._evidence_sources) < self._min_evidence_required:
+            n = len(self._evidence_sources)
+            result = (
+                f"Fix attempt rejected — insufficient investigation. "
+                f"You have gathered {n} evidence source(s), "
+                f"but at least {self._min_evidence_required} are required before applying a fix.\n"
+                f"Use investigation actions (read_logs, check_metrics, check_alerts, "
+                f"run_diagnostic, check_deployments, trace_request, etc.) first."
+            )
+            reward = self._compute_reward("no_effect")
             obs = self._build_observation(result)
             if self.step_count >= self.max_steps:
                 self.done = True

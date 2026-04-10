@@ -174,7 +174,6 @@ class DBCascadeScenario(BaseScenario):
             if service == "payment-db" and fix_type in ("increase_pool_size", "scale_pool", "drain_pool"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._payment_db_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: payment-db connection pool increased from 200 → 500.\n"

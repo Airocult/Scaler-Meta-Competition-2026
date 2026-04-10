@@ -193,7 +193,6 @@ class RaceConditionScenario(BaseScenario):
                     and deploy_id == "deploy-a1b2c3"):
                 self._correct_rollback_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._inventory_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Rollback applied: inventory-service config reverted.\n"

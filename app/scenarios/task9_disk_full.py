@@ -167,7 +167,6 @@ class DiskFullScenario(BaseScenario):
                     "enable_archival", "enable_rotation", "clean_wal_enable_cron"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied:\n"

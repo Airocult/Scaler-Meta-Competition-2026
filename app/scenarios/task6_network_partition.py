@@ -260,7 +260,6 @@ class NetworkPartitionScenario(BaseScenario):
                             "restore_network", "fix_iptables"):
                 self._partition_resolved = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: iptables blocking rule removed.\n"
                           "  deploy-net-001 rolled back.\n"

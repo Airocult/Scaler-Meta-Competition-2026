@@ -161,7 +161,6 @@ class RedisFailoverScenario(BaseScenario):
                     "manual_failover", "promote_replica", "force_failover"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: Redis failover completed.\n"

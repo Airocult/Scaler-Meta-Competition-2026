@@ -155,7 +155,6 @@ class RateLimitScenario(BaseScenario):
                     "restore_rate_limit", "set_rate_limit_10000"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: api-gateway rate limit restored.\n"

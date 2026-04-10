@@ -239,7 +239,6 @@ class CertExpiryScenario(BaseScenario):
                                                               "update_cert", "install_cert"):
                 self._cert_renewed = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._services_reconnected = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: payment-service TLS certificate renewed.\n"

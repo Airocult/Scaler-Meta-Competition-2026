@@ -210,7 +210,6 @@ class DNSFailureScenario(BaseScenario):
                                                            "clear_dns_cache"):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._auth_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied: auth-service DNS cache flushed.\n"

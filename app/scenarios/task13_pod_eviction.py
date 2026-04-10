@@ -161,11 +161,11 @@ class PodEvictionScenario(BaseScenario):
         elif at == "apply_fix":
             service = params.get("service", "")
             fix_type = params.get("fix_type", "")
-            if fix_type in ("delete_batch_job", "kill_batch_job", "limit_batch_job",
-                    "evict_batch_job", "remove_batch_daemonset", "scale_down_batch"):
+            if (service in ("", "payment-service", "daily-report-generator", "batch-job") and
+                    fix_type in ("delete_batch_job", "kill_batch_job", "limit_batch_job",
+                    "evict_batch_job", "remove_batch_daemonset", "scale_down_batch")):
                 self._correct_fix_applied = True
                 self._fix_applied = True
-                self._root_cause_identified = True
                 self._service_fixed = True
                 self.incident_phase = IncidentPhase.VERIFYING
                 result = ("Fix applied:\n"
