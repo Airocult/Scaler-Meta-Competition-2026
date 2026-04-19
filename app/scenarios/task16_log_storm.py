@@ -29,6 +29,7 @@ class LogStormScenario(BaseScenario):
         self._correct_fix_applied = False
         self._service_fixed = False
         self._wrong_fix_count = 0
+        self._root_cause_service = "auth-service"
 
     def _get_alert_summary(self) -> str:
         if self._service_fixed:
@@ -251,6 +252,11 @@ class LogStormScenario(BaseScenario):
         score += (self._status_page_updated and self._status_page_before_fix) * 0.02
         if self._fix_applied and self._fix_before_any_breach:
             score += 0.02
+        
+        # Efficient investigation bonus
+        score += self._efficient_investigation_bonus()
+        # Blast radius assessment bonus
+        score += self._blast_radius_bonus()
         score -= self._wrong_fix_count * 0.05
         score -= self.hints_used * 0.05
         return round(min(0.999, max(0.001, score)), 4)

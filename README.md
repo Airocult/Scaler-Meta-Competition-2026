@@ -808,8 +808,8 @@ Benchmarked across multiple OpenAI models using the same inference pipeline:
 
 ```bash
 # Clone the repository
-git clone https://github.com/Airocult/Quant-Quasars-2026.git
-cd Quant-Quasars-2026
+git clone https://github.com/Airocult/Scaler-Meta-Competition-2026.git
+cd Scaler-Meta-Competition-2026
 
 # Install dependencies with uv
 uv pip install -e ".[baseline,dev]"
@@ -981,7 +981,7 @@ curl http://localhost:7860/grader
 ## Project Structure
 
 ```
-Quant-Quasars-2026/
+Scaler-Meta-Competition-2026/
 ├── inference.py                          # Mandatory submission script (OpenAI client)
 ├── openenv.yaml                          # OpenEnv specification (16 tasks, schemas)
 ├── validate.py                           # Pre-submission validation script

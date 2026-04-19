@@ -30,6 +30,7 @@ class CertExpiryScenario(BaseScenario):
         self._services_reconnected = False
         self._wrong_fix_count = 0
         self._restart_without_cert_fix = 0
+        self._root_cause_service = "payment-service"
 
     def _get_alert_summary(self) -> str:
         if self._services_reconnected:
@@ -351,6 +352,11 @@ class CertExpiryScenario(BaseScenario):
             score += 0.02
 
         # Penalties
+        
+        # Efficient investigation bonus
+        score += self._efficient_investigation_bonus()
+        # Blast radius assessment bonus
+        score += self._blast_radius_bonus()
         score -= self._wrong_fix_count * 0.05
         score -= self._restart_without_cert_fix * 0.05
         score -= self.hints_used * 0.05

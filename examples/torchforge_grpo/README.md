@@ -14,7 +14,7 @@ Group Relative Policy Optimization (GRPO) with SREBench as the OpenEnv environme
 
 ```bash
 # 1. Start the SREBench environment server
-cd /path/to/Quant-Quasars-2026
+cd /path/to/Scaler-Meta-Competition-2026
 uvicorn app.main:app --host 0.0.0.0 --port 7860
 
 # 2. Run GRPO training (requires 2+ GPUs)

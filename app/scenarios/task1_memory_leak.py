@@ -24,6 +24,7 @@ class MemoryLeakScenario(BaseScenario):
         self._fix_applied_correctly = False
         self._fix_applied_to_wrong_service = False
         self._order_service_fixed = False
+        self._root_cause_service = "order-service"
 
     def _get_alert_summary(self) -> str:
         return ("CRITICAL: order-service has restarted 4 times in 20 minutes. "
@@ -234,6 +235,11 @@ class MemoryLeakScenario(BaseScenario):
             score += 0.02
 
         # Escalation penalty
+        
+        # Efficient investigation bonus
+        score += self._efficient_investigation_bonus()
+        # Blast radius assessment bonus
+        score += self._blast_radius_bonus()
         score -= self.hints_used * 0.05
 
         return round(min(0.999, max(0.001, score)), 4)

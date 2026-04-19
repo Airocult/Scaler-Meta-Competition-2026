@@ -29,6 +29,7 @@ class DNSFailureScenario(BaseScenario):
         self._correct_fix_applied = False
         self._auth_fixed = False
         self._wrong_fix_count = 0
+        self._root_cause_service = "auth-service"
 
     def _get_alert_summary(self) -> str:
         if self._auth_fixed:
@@ -315,6 +316,11 @@ class DNSFailureScenario(BaseScenario):
             score += 0.02
 
         # Wrong fix penalty
+        
+        # Efficient investigation bonus
+        score += self._efficient_investigation_bonus()
+        # Blast radius assessment bonus
+        score += self._blast_radius_bonus()
         score -= self._wrong_fix_count * 0.05
 
         # Escalation penalty

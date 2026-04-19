@@ -29,6 +29,7 @@ class RaceConditionScenario(BaseScenario):
         self._postmortem_mentions_root_cause = False
         self._restarts_without_deploy_check = 0
         self._inventory_fixed = False
+        self._root_cause_service = "inventory-service"
 
     def _get_alert_summary(self) -> str:
         return ("CRITICAL: Intermittent 5xx errors across multiple services. "
@@ -299,6 +300,11 @@ class RaceConditionScenario(BaseScenario):
         score -= self.hints_used * 0.075
 
         # Dead-end trap: restarts without deploy check
+        
+        # Efficient investigation bonus
+        score += self._efficient_investigation_bonus()
+        # Blast radius assessment bonus
+        score += self._blast_radius_bonus()
         if self._restarts_without_deploy_check > 2:
             score -= 0.10
 

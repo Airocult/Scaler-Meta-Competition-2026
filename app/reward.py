@@ -14,9 +14,13 @@ Design principles:
 
 
 class RewardShaper:
-    # Step penalty increases linearly: -0.003 at step 1 → -0.015 at max_steps
-    BASE_STEP_PENALTY_MIN = -0.003
-    BASE_STEP_PENALTY_MAX = -0.015
+    # Step penalty increases linearly with a grace period for initial orientation.
+    # Grace period: first 3 steps have zero step penalty (let agents orient).
+    # After grace: penalty grows from -0.002 to -0.012, capped at -0.08 cumulative.
+    GRACE_STEPS = 3
+    BASE_STEP_PENALTY_MIN = -0.002
+    BASE_STEP_PENALTY_MAX = -0.012
+    MAX_CUMULATIVE_STEP_PENALTY = -0.08
 
     REWARDS: dict[str, float] = {
         # Positive — milestone events
@@ -39,6 +43,7 @@ class RewardShaper:
 
     def __init__(self):
         self._services_queried: dict[str, int] = {}
+        self._cumulative_step_penalty: float = 0.0
 
     def compute(
         self,
@@ -48,17 +53,28 @@ class RewardShaper:
         previous_reward: float,
         service: str = "",
     ) -> float:
-        # Urgency-scaled step penalty: grows linearly with progress
-        progress = step_count / max(max_steps, 1)
-        base = self.BASE_STEP_PENALTY_MIN + (
-            (self.BASE_STEP_PENALTY_MAX - self.BASE_STEP_PENALTY_MIN) * progress
-        )
+        # Grace period: first N steps have zero step penalty
+        if step_count <= self.GRACE_STEPS:
+            base = 0.0
+        else:
+            # Urgency-scaled step penalty after grace period
+            effective_step = step_count - self.GRACE_STEPS
+            effective_max = max(max_steps - self.GRACE_STEPS, 1)
+            progress = effective_step / effective_max
+            base = self.BASE_STEP_PENALTY_MIN + (
+                (self.BASE_STEP_PENALTY_MAX - self.BASE_STEP_PENALTY_MIN) * progress
+            )
+            # Cap cumulative step penalty
+            if self._cumulative_step_penalty + base < self.MAX_CUMULATIVE_STEP_PENALTY:
+                base = max(self.MAX_CUMULATIVE_STEP_PENALTY - self._cumulative_step_penalty, base)
+            self._cumulative_step_penalty += base
 
         # Information decay: same service queried multiple times
+        # Allow 3 full-reward queries per service (was 2), then diminish
         if event == "info_gathered" and service:
             self._services_queried[service] = self._services_queried.get(service, 0) + 1
             query_count = self._services_queried[service]
-            if query_count > 2:
+            if query_count > 3:
                 event = "info_gathered_redundant"
 
         event_reward = self.REWARDS.get(event, 0.0)

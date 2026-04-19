@@ -28,6 +28,7 @@ class DBCascadeScenario(BaseScenario):
         self._fix_applied_to_wrong_surface = False
         self._payment_db_fixed = False
         self._restart_count = 0
+        self._root_cause_service = "payment-db"
 
     def _get_alert_summary(self) -> str:
         return ("CRITICAL: api-gateway error rate 58% — customers seeing 503s. "
@@ -285,6 +286,11 @@ class DBCascadeScenario(BaseScenario):
             score += 0.02
 
         # Escalation penalty
+        
+        # Efficient investigation bonus
+        score += self._efficient_investigation_bonus()
+        # Blast radius assessment bonus
+        score += self._blast_radius_bonus()
         score -= self.hints_used * 0.05
 
         return round(min(0.999, max(0.001, score)), 4)

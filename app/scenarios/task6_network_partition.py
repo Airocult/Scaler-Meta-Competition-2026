@@ -34,6 +34,7 @@ class NetworkPartitionScenario(BaseScenario):
         self._data_reconciled = False
         self._wrong_fix_count = 0
         self._restart_count = 0
+        self._root_cause_service = "inventory-service"
 
     def _get_alert_summary(self) -> str:
         if self._partition_resolved and self._data_reconciled:
@@ -399,6 +400,11 @@ class NetworkPartitionScenario(BaseScenario):
             score += 0.02
 
         # Penalties
+        
+        # Efficient investigation bonus
+        score += self._efficient_investigation_bonus()
+        # Blast radius assessment bonus
+        score += self._blast_radius_bonus()
         score -= self._wrong_fix_count * 0.05
         score -= min(self._restart_count, 3) * 0.03
         score -= self.hints_used * 0.075
