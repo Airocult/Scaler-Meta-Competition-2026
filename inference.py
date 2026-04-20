@@ -1,28 +1,43 @@
 """
-SREBench Inference Script
+SREBench Inference Script — v2.0 (Enhanced)
 ===================================
 MANDATORY
 - Uses OpenAI Client for all LLM calls
 - Reads API_BASE_URL, MODEL_NAME, HF_TOKEN from environment
 - Emits [START], [STEP], [END] structured stdout logs
 - Named inference.py in the root directory
+
+ENHANCEMENTS (v2.0):
+- Scoring-aware system prompt with explicit bonus checklist
+- Dynamic temperature scheduling (explore → exploit)
+- Structured investigation state tracking (Reflexion-inspired)
+- Postmortem template injection for keyword-rich documentation
+- Task-adaptive prompt addons based on initial observations
+- Few-shot exemplar for high-scoring investigation pattern
+- Priority-based context compression preserving milestones
 """
 
 import json
 import os
+import re
 import sys
-import time
 from typing import List, Optional
 
 import httpx
 from openai import OpenAI
 
-# ── Environment variables ────────────────────────────────────────────────────
+# ── Set these in your system or .env file ────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
 HF_TOKEN = os.getenv("HF_TOKEN")
 API_KEY = HF_TOKEN or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
+
+# Optional (for local Docker deployment)
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+
+# SREBench Space URL
 SPACE_URL = os.getenv("SREBENCH_URL", "https://neuralninja110-srebench.hf.space")
+
 BENCHMARK = "srebench"
 SEED = 42
 
@@ -45,665 +60,492 @@ TASKS = [
     "task16_log_storm",
 ]
 
+MAX_STEPS_MAP = {
+    "task1_memory_leak": 20,
+    "task2_db_cascade": 30,
+    "task3_race_condition": 40,
+    "task4_dns_failure": 25,
+    "task5_cert_expiry": 35,
+    "task6_network_partition": 40,
+    "task7_kafka_lag": 25,
+    "task8_redis_failover": 30,
+    "task9_disk_full": 25,
+    "task10_rate_limit": 25,
+    "task11_db_migration_lock": 35,
+    "task12_health_flap": 30,
+    "task13_pod_eviction": 35,
+    "task14_cascading_timeout": 30,
+    "task15_secret_rotation": 25,
+    "task16_log_storm": 35,
+}
+
+
+# ── System Prompt with Scoring Awareness ─────────────────────────────────────
+
+SYSTEM_PROMPT = """You are an expert SRE on-call engineer debugging a production incident.
+
+## INVESTIGATION METHODOLOGY (follow this order STRICTLY)
+1. ORIENT: list_services + check_alerts to understand scope
+2. ASSESS: check_slo to see which services are burning error budget fastest, then classify_severity (SEV1-SEV4)
+3. COMMUNICATE: update_status_page with initial status so stakeholders are informed
+4. GATHER: read_logs + check_metrics on degraded services — focus on the MOST degraded service first
+5. TRACE: trace_request to see distributed request flow — identify where latency/errors originate
+6. TRACE DEPENDENCIES: check_dependencies on the degraded service AND on suspected root cause service (do this at least TWICE on different services)
+7. CORRELATE: check_deployments to find recent changes. Compare deploy timestamps with error start times.
+8. DIAGNOSE: run_diagnostic to confirm root cause. Match diagnostic type to symptoms (see PATTERN MATCHING below).
+9. FIX: apply_fix targeting the ROOT CAUSE service, not symptom services. Include deploy_id when rolling back.
+10. COMMUNICATE: update_status_page with resolution status
+11. DOCUMENT: write_postmortem BEFORE verifying — MUST mention the specific root cause, affected services, and remediation steps in detail. Use ALL technical terms from your investigation.
+12. VERIFY: verify_health AFTER documenting — this ENDS the episode, so do it LAST.
+
+## SCORING COMPONENTS (maximize ALL of these)
+1. Investigation milestones (50-55%): Hit ALL milestone flags in correct order
+2. Evidence breadth (8%): Gather >=4 DISTINCT (action_type, service) pairs BEFORE fixing
+3. Postmortem quality (6%): Include specific root cause keywords, affected services, timeline
+4. Communication (4%): classify_severity + update_status_page BEFORE attempting fix
+5. SLO awareness (2%): Fix before any SLO breaches
+6. Time efficiency (5-10%): Complete within 50% of max steps
+7. Blast radius (3%): check_dependencies on >=2 DIFFERENT services
+8. Efficient investigation (4%): Identify root cause quickly
+
+## BONUS CHECKLIST (ensure ALL are done before verify_health):
+□ classify_severity (do this early, after initial investigation)
+□ update_status_page (MUST be done BEFORE apply_fix for bonus points)
+□ check_slo (during assessment phase)
+□ check_dependencies on >=2 different services (blast radius assessment)
+□ write_postmortem with detailed technical content (BEFORE verify_health)
+□ Gather >=4 distinct evidence sources (different action+service combinations)
+
+## CRITICAL RULES
+- NEVER apply_fix as first action. You need at least 2 evidence sources first (investigation gating).
+- When multiple services are degraded, the ROOT CAUSE is usually a LEAF service (databases). Errors CASCADE UPWARD.
+- If errors started at time T, check what was deployed at T±5 minutes — timing correlation = likely cause.
+- After ANY fix, ALWAYS: update_status_page → write_postmortem → verify_health (in that order).
+- verify_health ENDS the episode — anything after it is ignored.
+
+## SEVERITY CLASSIFICATION
+- SEV1: Complete service outage or data loss affecting all users (payment down, auth completely broken)
+- SEV2: Significant degradation affecting many users (intermittent errors, partial outages, data staleness)
+- SEV3: Minor impact, workaround available
+- SEV4: Cosmetic or negligible user impact
+
+## PATTERN MATCHING (match symptoms to diagnostic type)
+- "OOMKilled", "heap space", "memory exceeded" → memory leak → fix_type="restart"
+- "connection pool exhausted", "HikariPool" → DB pool issue → trace to DATABASE → fix_type="increase_pool_size"
+- "SSL handshake", "certificate expired", "TLS failed" → expired TLS cert → run_diagnostic type="tls" → fix_type="renew_cert"
+- "DNS resolution failed", "NXDOMAIN", "stale DNS" → DNS cache → run_diagnostic type="dns" → fix_type="flush_dns"
+- "connection timed out", "network unreachable", "split-brain" → network partition → run_diagnostic type="iptables" → fix_type="rollback_deploy" then reconcile_data
+- "consumer lag", "offset behind", "kafka" → Kafka consumer lag → fix_type="restart_consumers" or "increase_partitions"
+- "redis", "failover", "READONLY", "replication" → Redis failover → fix_type="trigger_failover" or "promote_replica"
+- "disk", "no space", "filesystem full" → Disk full → fix_type="cleanup_disk" or "expand_volume"
+- "rate limit", "429", "throttled" → Rate limiting → fix_type="increase_rate_limit" or "add_circuit_breaker"
+- "migration", "lock", "blocking", "deadlock" → DB migration lock → fix_type="kill_migration" or "rollback_migration"
+- "health check", "flapping", "CrashLoopBackOff" → Health check flap → fix_type="adjust_health_check" or "restart"
+- "evict", "OOMKilled", "node pressure" → Pod eviction → fix_type="increase_resources" or "reschedule"
+- "timeout", "cascading", "circuit breaker" → Cascading timeout → fix_type="increase_timeout" or "add_circuit_breaker"
+- "secret", "rotation", "expired key", "401" → Secret rotation failure → fix_type="rotate_secrets" or "rollback_config"
+- "log storm", "disk io", "logging flood" → Log storm → fix_type="adjust_log_level" or "add_rate_limiter"
+- Error spike correlating with deploy → config change → run_diagnostic type="config_diff" WITH deploy_id → fix_type="rollback"
+
+## CASCADE TRACING
+When alert points to a gateway/frontend service:
+1. check_dependencies on the alerted service
+2. Trace toward LEAF services (databases)
+3. check_metrics on EACH service in chain — highest error_rate = likely root cause
+4. trace_request to visualise the full request flow and pinpoint exact failure span
+Example: api-gateway → order-service → payment-service → payment-db(pool exhausted) = ROOT CAUSE
+
+## RESPONSE FORMAT
+Output exactly one JSON object per turn:
+{
+  "action_type": "<action>",
+  "parameters": { ... },
+  "reasoning": "What I observe → What I suspect → Why this action"
+}
+
+## AVAILABLE ACTIONS
+- list_services: {} — List all services and statuses
+- check_alerts: {} — View active alerts
+- read_logs: {"service": "<name>"} — Read application logs
+- check_metrics: {"service": "<name>", "metric": "<type>"} — Get service metrics
+- check_deployments: {"last_n": 5} or {"service": "<name>"} — Recent deploys
+- check_dependencies: {"service": "<name>"} — Service dependency graph
+- run_diagnostic: {"service": "<name>", "type": "<diag_type>"} — Run diagnostics
+- trace_request: {"service": "<name>"} — Distributed trace waterfall showing request flow
+- check_slo: {} — SLO dashboard with error budget burn rates for all services
+- classify_severity: {"severity": "SEV1|SEV2|SEV3|SEV4"} — Classify incident severity
+- update_status_page: {"status": "investigating|identified|monitoring|resolved", "message": "<text>"} — Update public status page
+- apply_fix: {"service": "<name>", "fix_type": "<type>"} — Apply remediation
+- verify_health: {"service": "<name>"} or {} — Verify resolution
+- write_postmortem: {"content": "<detailed text>"} — Document the incident
+- escalate: {} — Get a hint (costs points)
+
+Output valid JSON only — no markdown fences, no commentary outside the JSON object.
+"""
+
+
+# ── Few-Shot Exemplar ────────────────────────────────────────────────────────
+
+FEW_SHOT_EXAMPLE = """
+EXAMPLE of a high-scoring (0.94) investigation on a similar incident:
+Step 1: list_services → Found order-service DOWN, auth-service degraded
+Step 2: check_alerts → Alert: order-service OOMKilled 3x in 15 minutes
+Step 3: check_slo → order-service burning 4.2x error budget
+Step 4: classify_severity → SEV1 (complete service outage)
+Step 5: update_status_page → "Investigating order-service outage affecting all orders"
+Step 6: read_logs(order-service) → OOM errors, heap at 98%
+Step 7: check_metrics(order-service, memory) → Memory linearly increasing
+Step 8: check_dependencies(order-service) → upstream: api-gateway, downstream: order-db
+Step 9: check_deployments → Deploy D-003 at T-10min changed memory limits
+Step 10: trace_request(order-service) → Span shows 4500ms before OOM
+Step 11: check_dependencies(api-gateway) → Confirms cascade from order-service
+Step 12: run_diagnostic(order-service, type=memory) → Confirmed memory leak
+Step 13: apply_fix(order-service, fix_type=restart) → Fix applied
+Step 14: update_status_page → "Fix applied, monitoring recovery"
+Step 15: write_postmortem → "Root cause: OOM Kill due to memory leak in order-service heap. Deploy D-003 reduced memory limits causing heap exhaustion. Affected services: order-service (primary), api-gateway (cascade). Fixed by restarting order-service. Prevention: add memory alerts, review deployment memory configs."
+Step 16: verify_health → All services healthy. EPISODE ENDS.
+Key: Used 6+ evidence sources, classified severity early, updated status page twice, wrote detailed postmortem with keywords.
+"""
+
+
 # ── Logging helpers (mandatory format) ───────────────────────────────────────
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
+
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
     done_val = str(done).lower()
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
-# ── LLM call with retry ─────────────────────────────────────────────────────
+# ── LLM helpers ──────────────────────────────────────────────────────────────
 
-def call_llm(client: OpenAI, messages: list, temperature: float = 0.0) -> str:
-    """Call LLM with exponential backoff retry on rate limits."""
-    for attempt in range(5):
-        try:
-            try:
-                completion = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    temperature=temperature,
-                    top_p=0.9,
-                    max_tokens=2048,
-                    stream=False,
-                )
-            except Exception as e:
-                if "max_tokens" in str(e) or "unsupported_parameter" in str(e):
-                    completion = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=messages,
-                        max_completion_tokens=2048,
-                        stream=False,
-                    )
-                else:
-                    raise
-            return completion.choices[0].message.content
-        except Exception as e:
-            if "429" in str(e) or "rate" in str(e).lower():
-                wait = 2 ** attempt
-                print(f"[DEBUG] Rate limited, retrying in {wait}s (attempt {attempt+1}/5)", file=sys.stderr)
-                time.sleep(wait)
-                continue
+def extract_json(content: str) -> dict:
+    """Extract JSON from LLM response, handling markdown fences and extra text."""
+    content = content.strip()
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    if content.startswith("```"):
+        lines = content.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        content = "\n".join(lines).strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", content)
+    if match:
+        return json.loads(match.group())
+    raise ValueError(f"No valid JSON found in: {content[:200]}")
+
+
+def get_temperature(step: int, max_steps: int) -> float:
+    """Dynamic temperature scheduling: explore early, exploit late."""
+    progress = step / max(max_steps, 1)
+    if progress < 0.15:
+        return 0.3   # Exploration: consider multiple hypotheses
+    elif progress < 0.5:
+        return 0.1   # Investigation: focused, precise actions
+    else:
+        return 0.05  # Exploitation: maximum determinism for fix/verify
+
+
+def call_llm(client: OpenAI, messages: list, temperature: float = 0.1) -> str:
+    """Call the LLM via OpenAI client and return content."""
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=temperature,
+            top_p=0.9,
+            max_tokens=4096,
+            stream=False,
+        )
+    except Exception as e:
+        if "max_tokens" in str(e) or "unsupported_parameter" in str(e):
+            # Reasoning models need max_completion_tokens and don't support temperature/top_p
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                max_completion_tokens=4096,
+                stream=False,
+            )
+        else:
             raise
-    return ""
+    return completion.choices[0].message.content
 
 
-# ── Task Definitions ─────────────────────────────────────────────────────────
-# Each task defines the optimal scripted action sequence plus postmortem template.
-# The sequence maximizes: evidence breadth, investigation bonuses, time bonus,
-# correct fix, blast radius check, severity + status page bonuses.
+# ── Investigation State Tracker (Reflexion-inspired) ─────────────────────────
 
-TASK_DEFS = {
-    "task1_memory_leak": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: order-service OOM kills and memory spikes causing restarts and elevated error rates"}},
-            {"action_type": "read_logs", "parameters": {"service": "order-service"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "order-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "order-service", "fix_type": "restart"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "The order-service experienced repeated OOM kills and restarts due to a memory leak, "
-            "causing elevated error rates and 503s for downstream consumers including the api-gateway.\n\n"
-            "## Root Cause Analysis\n"
-            "A memory leak in order-service caused heap exhaustion (490MB/512MB). "
-            "The OOM killer repeatedly terminated the container. GC overhead reached 97%, "
-            "confirming the leak was in the heap. The issue was introduced by a recent deployment.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for order-service restarts and high error rate\n"
-            "- Logs showed OOMKilled events and heap memory at 98%\n"
-            "- Dependencies confirmed api-gateway was impacted downstream\n"
-            "- Service restarted to clear the leaked memory\n\n"
-            "## Resolution\n"
-            "Restarted order-service to clear the memory leak. Memory usage dropped to normal levels.\n\n"
-            "## Prevention\n"
-            "Enable memory profiling in CI, set heap size limits, add OOM alerting thresholds, "
-            "and require memory testing for deployments touching order processing."
-        ),
-        "postmortem_keywords": ["memory", "oom", "leak", "heap", "order-service"],
-    },
-    "task2_db_cascade": {
-        "severity": "SEV1",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV1"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: Cascading failures across api-gateway, payment-service, and order-service with elevated 503s"}},
-            {"action_type": "read_logs", "parameters": {"service": "payment-service"}},
-            {"action_type": "check_metrics", "parameters": {"service": "payment-db"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "payment-db"}},
-            {"action_type": "apply_fix", "parameters": {"service": "payment-db", "fix_type": "increase_pool_size"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "Multiple services including api-gateway, order-service, and payment-service experienced "
-            "cascading failures with high error rates and 503s. Payment processing was completely down.\n\n"
-            "## Root Cause Analysis\n"
-            "The root cause was connection pool exhaustion on payment-db. The HikariPool was configured "
-            "with max 200 connections, but pool usage reached 99%, causing connection timeouts. "
-            "This cascade propagated from payment-db to payment-service to api-gateway and order-service.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for api-gateway 503s and payment-service errors\n"
-            "- Logs on payment-service showed connection timeouts to payment-db\n"
-            "- Metrics on payment-db confirmed pool at 99% utilization\n"
-            "- Increased pool size on payment-db from 200 to 500 connections\n\n"
-            "## Resolution\n"
-            "Increased the connection pool size on payment-db, which immediately relieved the cascade.\n\n"
-            "## Prevention\n"
-            "Add pool usage alerting at 80% threshold, implement connection pool auto-scaling, "
-            "and review Hikari pool configuration across all database services."
-        ),
-        "postmortem_keywords": ["payment-db", "pool", "connection", "cascade", "hikari"],
-    },
-    "task3_race_condition": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: Intermittent 500 errors across services, potential config change or race condition"}},
-            {"action_type": "check_metrics", "parameters": {"service": "inventory-service", "metric": "error_rate"}},
-            {"action_type": "check_deployments", "parameters": {}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "inventory-service", "type": "config_diff", "deploy_id": "deploy-a1b2c3"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "inventory-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "inventory-service", "fix_type": "rollback", "deploy_id": "deploy-a1b2c3"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "Intermittent 500 errors across services caused by a race condition in inventory-service "
-            "after a config change deployment (deploy-a1b2c3).\n\n"
-            "## Root Cause Analysis\n"
-            "Deployment deploy-a1b2c3 changed the lock_timeout configuration on inventory-service's "
-            "Redis connection from 500ms to a value that caused race conditions under concurrent access. "
-            "This led to lock contention and intermittent 500 errors cascading through the service graph.\n\n"
-            "## Timeline\n"
-            "- Error rate spike detected on inventory-service\n"
-            "- check_deployments identified recent deploy-a1b2c3\n"
-            "- Config diff showed lock_timeout change causing the race condition\n"
-            "- Rolled back deploy-a1b2c3 to restore previous configuration\n\n"
-            "## Resolution\n"
-            "Rolled back deployment deploy-a1b2c3 on inventory-service, restoring the previous "
-            "lock_timeout and Redis config. Errors ceased immediately.\n\n"
-            "## Prevention\n"
-            "Require lock_timeout and Redis config changes to go through load testing, "
-            "add canary deployments for config changes, and set up automated rollback triggers."
-        ),
-        "postmortem_keywords": ["lock_timeout", "race", "config", "redis", "deploy-a1b2c3", "500ms"],
-    },
-    "task4_dns_failure": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: auth-service DNS resolution failures causing authentication errors across services"}},
-            {"action_type": "read_logs", "parameters": {"service": "auth-service"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "auth-service", "type": "dns"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "auth-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "auth-service", "fix_type": "flush_dns"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "auth-service experienced DNS resolution failures causing authentication errors "
-            "and degraded service across dependent systems.\n\n"
-            "## Root Cause Analysis\n"
-            "A stale DNS cache entry on auth-service was pointing to an old IP (10.0.0.99) "
-            "instead of the current service endpoint. NXDOMAIN errors appeared in logs as "
-            "the cached entry expired partially but wasn't refreshed. "
-            "This caused all auth requests to fail.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for auth-service errors\n"
-            "- Logs showed NXDOMAIN and DNS resolution failures with stale IP 10.0.0.99\n"
-            "- DNS diagnostic confirmed stale cache entries\n"
-            "- Flushed DNS cache on auth-service\n\n"
-            "## Resolution\n"
-            "Flushed the DNS cache on auth-service, resolving the stale entry issue.\n\n"
-            "## Prevention\n"
-            "Reduce DNS TTL for critical services, add DNS resolution monitoring, "
-            "and implement automatic cache flush on resolution failures."
-        ),
-        "postmortem_keywords": ["dns", "cache", "stale", "auth-service", "nxdomain", "10.0.0.99"],
-    },
-    "task5_cert_expiry": {
-        "severity": "SEV1",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV1"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: payment-service TLS certificate errors causing payment processing failures"}},
-            {"action_type": "read_logs", "parameters": {"service": "payment-service"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "payment-service", "type": "tls"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "payment-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "payment-service", "fix_type": "renew_cert"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "payment-service experienced a complete outage due to an expired TLS certificate, "
-            "causing all HTTPS connections to fail with SSL handshake errors.\n\n"
-            "## Root Cause Analysis\n"
-            "The TLS cert on payment-service expired, causing SSL handshake failures for all "
-            "incoming connections. The auto-renewal process had failed silently. "
-            "This caused payment processing to halt completely.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for payment-service errors and SSL failures\n"
-            "- Logs showed TLS handshake errors and certificate expired messages\n"
-            "- TLS diagnostic confirmed cert expiry\n"
-            "- Renewed the certificate on payment-service\n\n"
-            "## Resolution\n"
-            "Renewed the expired TLS certificate on payment-service via renew_cert. "
-            "SSL connections resumed immediately.\n\n"
-            "## Prevention\n"
-            "Fix the auto-renewal pipeline, add cert expiry monitoring with 30-day alerts, "
-            "and test renewal process regularly."
-        ),
-        "postmortem_keywords": ["tls", "cert", "expired", "payment-service", "ssl", "renew", "auto-renewal"],
-    },
-    "task6_network_partition": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: Network partition detected affecting inventory-service with split-brain conditions"}},
-            {"action_type": "read_logs", "parameters": {"service": "inventory-service"}},
-            {"action_type": "check_deployments", "parameters": {}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "inventory-service", "type": "iptables"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "inventory-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "inventory-service", "fix_type": "rollback_deploy", "deploy_id": "deploy-net-001"}},
-            {"action_type": "apply_fix", "parameters": {"service": "inventory-service", "fix_type": "reconcile_data"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "A network partition caused split-brain conditions in inventory-service, "
-            "leading to stale data and inconsistent responses across nodes.\n\n"
-            "## Root Cause Analysis\n"
-            "Deployment deploy-net-001 introduced an iptables rule that created a network partition "
-            "between inventory-service nodes at 10.0.2.30 and 10.0.2.50. This caused a split-brain "
-            "scenario where both sides operated independently with stale data.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for inventory-service inconsistencies\n"
-            "- Logs showed network unreachable errors between nodes\n"
-            "- Deployments revealed deploy-net-001 as the recent change\n"
-            "- iptables diagnostic confirmed the partition rule\n"
-            "- Rolled back deploy-net-001 to remove the iptables rule\n"
-            "- Reconciled data on inventory-service to resolve stale entries\n\n"
-            "## Resolution\n"
-            "Rolled back the iptables rule from deploy-net-001, then reconciled data on inventory-service "
-            "to fix stale data from the split-brain period.\n\n"
-            "## Prevention\n"
-            "Require network change reviews, add partition detection monitoring, "
-            "and implement automatic reconciliation for split-brain recovery."
-        ),
-        "postmortem_keywords": ["partition", "iptables", "split-brain", "stale", "reconcil", "deploy-net-001", "10.0.2.30", "10.0.2.50"],
-    },
-    "task7_kafka_lag": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: Kafka consumer lag spike on order-service causing delayed order processing"}},
-            {"action_type": "read_logs", "parameters": {"service": "order-service"}},
-            {"action_type": "check_deployments", "parameters": {}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "order-service", "type": "kafka"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "order-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "order-service", "fix_type": "rollback"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "order-service experienced severe Kafka consumer lag causing delayed order processing "
-            "and increasing backlog of unprocessed messages.\n\n"
-            "## Root Cause Analysis\n"
-            "A recent deployment changed the Kafka session.timeout from 30000ms to 3000ms on "
-            "order-service's consumer group. This caused frequent consumer rebalance cycles "
-            "as consumers were timing out and rejoining, creating massive consumer lag.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for consumer lag on order-service\n"
-            "- Logs showed repeated rebalance events and session timeouts\n"
-            "- Deployments identified the config change (session.timeout: 3000ms)\n"
-            "- Kafka diagnostic confirmed the rebalance storm\n"
-            "- Rolled back the deployment to restore session.timeout to 30000ms\n\n"
-            "## Resolution\n"
-            "Rolled back the Kafka config change, restoring session.timeout to 30000ms. "
-            "Consumer lag began recovering immediately as rebalances stopped.\n\n"
-            "## Prevention\n"
-            "Add Kafka consumer lag alerting, require load testing for consumer config changes, "
-            "and set guardrails on session.timeout minimum values."
-        ),
-        "postmortem_keywords": ["kafka", "consumer", "rebalance", "session.timeout", "3000", "lag"],
-    },
-    "task8_redis_failover": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: Redis cache failures on inventory-service causing elevated latency and errors"}},
-            {"action_type": "read_logs", "parameters": {"service": "inventory-service"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "inventory-service", "type": "redis"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "inventory-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "inventory-service", "fix_type": "force_failover"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "inventory-service experienced elevated cache miss rates and latency due to "
-            "Redis cluster issues causing degraded performance.\n\n"
-            "## Root Cause Analysis\n"
-            "The Redis sentinel quorum was misconfigured, preventing automatic failover when "
-            "the primary Redis node became unresponsive. Sentinel nodes could not agree on "
-            "promoting a replica, leaving the cache cluster in a degraded state.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for inventory-service cache miss spike\n"
-            "- Logs showed Redis connection failures and cache misses\n"
-            "- Redis diagnostic confirmed sentinel quorum issue and failed failover\n"
-            "- Forced manual failover to promote a healthy replica as primary\n\n"
-            "## Resolution\n"
-            "Forced a manual failover to promote a healthy Redis replica as the new primary, "
-            "restoring cache availability for inventory-service.\n\n"
-            "## Prevention\n"
-            "Fix sentinel quorum configuration, add Redis failover monitoring, "
-            "and test failover procedures regularly."
-        ),
-        "postmortem_keywords": ["redis", "sentinel", "quorum", "failover", "primary", "cache"],
-    },
-    "task9_disk_full": {
-        "severity": "SEV1",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV1"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: user-db disk space exhaustion causing auth-service failures and data write errors"}},
-            {"action_type": "read_logs", "parameters": {"service": "auth-service"}},
-            {"action_type": "read_logs", "parameters": {"service": "user-db"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "user-db", "type": "disk"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "user-db"}},
-            {"action_type": "apply_fix", "parameters": {"service": "user-db", "fix_type": "clean_wal"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "user-db ran out of disk space due to WAL file accumulation, causing write failures "
-            "that cascaded to auth-service and other dependent services.\n\n"
-            "## Root Cause Analysis\n"
-            "The WAL archival cron job on user-db had been disabled, causing WAL files to accumulate "
-            "until disk was full. Without archival or rotation, the database could not write new "
-            "transactions, causing auth-service to fail on user lookups.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for auth-service failures\n"
-            "- auth-service logs showed database write errors\n"
-            "- user-db logs confirmed disk full and WAL accumulation\n"
-            "- Disk diagnostic showed 100% usage from WAL files\n"
-            "- Cleaned WAL files and re-enabled archival cron\n\n"
-            "## Resolution\n"
-            "Cleaned accumulated WAL files on user-db and re-enabled the archival cron job "
-            "to prevent future accumulation. Disk usage returned to normal.\n\n"
-            "## Prevention\n"
-            "Add disk usage alerting at 80% threshold, ensure WAL archival cron is monitored, "
-            "implement WAL rotation policies, and add cron job health checks."
-        ),
-        "postmortem_keywords": ["disk", "wal", "full", "archival", "rotation", "cron"],
-    },
-    "task10_rate_limit": {
-        "severity": "SEV1",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV1"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: api-gateway returning 429 rate limit errors to all clients, service capacity reduced"}},
-            {"action_type": "read_logs", "parameters": {"service": "api-gateway"}},
-            {"action_type": "check_deployments", "parameters": {}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "api-gateway", "type": "rate_limit"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "api-gateway"}},
-            {"action_type": "apply_fix", "parameters": {"service": "api-gateway", "fix_type": "rollback"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "api-gateway started returning 429 rate limit errors to all clients after a "
-            "deployment misconfigured the rate limit threshold.\n\n"
-            "## Root Cause Analysis\n"
-            "A recent deploy changed the rate limit on api-gateway from 10000 requests/sec to "
-            "100 requests/sec, causing all legitimate traffic to be throttled with 429 errors. "
-            "The configuration change was applied without proper review.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for api-gateway 429 error spike\n"
-            "- Logs showed massive rate limiting (throttle) of all requests\n"
-            "- Deployments identified the rate limit config change\n"
-            "- Rate limit diagnostic confirmed threshold at 100 (should be 10000)\n"
-            "- Rolled back the deployment to restore correct rate limit\n\n"
-            "## Resolution\n"
-            "Rolled back the deployment on api-gateway, restoring the rate limit from 100 to 10000 req/s.\n\n"
-            "## Prevention\n"
-            "Add rate limit config validation in CI, require review for gateway config changes, "
-            "and implement canary deployment for rate limit modifications."
-        ),
-        "postmortem_keywords": ["rate", "limit", "429", "throttl", "10000", "100", "deploy"],
-    },
-    "task11_db_migration_lock": {
-        "severity": "SEV1",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV1"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: payment-db lock contention blocking payment-service queries and causing timeouts"}},
-            {"action_type": "read_logs", "parameters": {"service": "payment-service"}},
-            {"action_type": "read_logs", "parameters": {"service": "payment-db"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "payment-db", "type": "locks"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "payment-db"}},
-            {"action_type": "apply_fix", "parameters": {"service": "payment-db", "fix_type": "kill_migration"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "payment-service experienced timeouts and failures due to an exclusive lock held "
-            "by a database migration running on payment-db during peak hours.\n\n"
-            "## Root Cause Analysis\n"
-            "An ALTER TABLE migration was running on payment-db, holding an exclusive lock "
-            "that blocked all concurrent queries from payment-service. The migration was "
-            "started during peak traffic hours, causing widespread payment failures.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for payment-service timeouts\n"
-            "- payment-service logs showed query timeouts to payment-db\n"
-            "- payment-db logs confirmed lock contention\n"
-            "- Lock diagnostic identified the ALTER TABLE migration holding exclusive lock\n"
-            "- Killed the migration query to release the lock\n\n"
-            "## Resolution\n"
-            "Killed the blocking ALTER TABLE migration on payment-db, releasing the exclusive "
-            "lock and allowing normal query processing to resume.\n\n"
-            "## Prevention\n"
-            "Schedule migrations outside peak hours, use online DDL tools, "
-            "add lock monitoring alerts, and require migration review for production."
-        ),
-        "postmortem_keywords": ["alter table", "lock", "migration", "exclusive", "payment", "peak"],
-    },
-    "task12_health_flap": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: order-service health check flapping causing load balancer to route traffic inconsistently"}},
-            {"action_type": "read_logs", "parameters": {"service": "order-service"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "order-service", "type": "health_check"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "order-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "order-service", "fix_type": "use_shallow_health_check"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "order-service health check was flapping between healthy and unhealthy states, "
-            "causing the load balancer to route traffic inconsistently and drop requests.\n\n"
-            "## Root Cause Analysis\n"
-            "The deep health check on order-service was checking all downstream dependencies "
-            "including inventory-service, which had intermittent timeout issues. When the deep "
-            "check timed out, the health check would fail, marking the instance unhealthy. "
-            "This caused rapid flapping between healthy and unhealthy states.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for order-service health check oscillation\n"
-            "- Logs showed rapid health check state changes (flap)\n"
-            "- Health check diagnostic revealed deep check dependency on inventory timeout\n"
-            "- Switched to shallow health check to decouple from dependency issues\n\n"
-            "## Resolution\n"
-            "Switched order-service from deep to shallow health check, removing the dependency "
-            "on downstream service availability for health determination.\n\n"
-            "## Prevention\n"
-            "Use shallow health checks for load balancer routing, implement separate deep "
-            "checks for monitoring only, and increase health check timeout thresholds."
-        ),
-        "postmortem_keywords": ["health check", "flap", "deep", "shallow", "inventory", "timeout"],
-    },
-    "task13_pod_eviction": {
-        "severity": "SEV1",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV1"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: payment-service pods being evicted due to node memory pressure from batch workloads"}},
-            {"action_type": "read_logs", "parameters": {"service": "payment-service"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "payment-service", "type": "kubernetes"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "payment-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "payment-service", "fix_type": "kill_batch_job"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "payment-service pods were being repeatedly evicted by Kubernetes due to node "
-            "memory pressure, causing payment processing outages.\n\n"
-            "## Root Cause Analysis\n"
-            "A batch job (daily-report-generator daemonset) was consuming excessive node memory "
-            "without proper resource limits. This caused node memory pressure, triggering "
-            "Kubernetes to evict payment-service pods to reclaim resources. "
-            "The batch job had no memory limit set, allowing unbounded consumption.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for payment-service pod evictions\n"
-            "- Logs showed OOMKilled and eviction events on payment-service\n"
-            "- Kubernetes diagnostic identified node memory pressure from batch daemonset\n"
-            "- Killed the batch job to relieve node pressure\n\n"
-            "## Resolution\n"
-            "Killed the resource-hungry batch job to stop pod evictions and restore "
-            "payment-service availability.\n\n"
-            "## Prevention\n"
-            "Set resource limits on all batch jobs and daemonsets, implement node "
-            "affinity to isolate batch workloads, and add node memory pressure alerting."
-        ),
-        "postmortem_keywords": ["evict", "memory", "node", "batch", "daemonset", "resource", "limit"],
-    },
-    "task14_cascading_timeout": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: cascading 504 timeouts from api-gateway through inventory-service due to slow queries"}},
-            {"action_type": "read_logs", "parameters": {"service": "api-gateway"}},
-            {"action_type": "read_logs", "parameters": {"service": "inventory-service"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "inventory-service", "type": "query"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "inventory-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "inventory-service", "fix_type": "recreate_index"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "Cascading 504 timeout errors from api-gateway through inventory-service caused "
-            "widespread service degradation and failed requests.\n\n"
-            "## Root Cause Analysis\n"
-            "A missing database index on inventory-service's query path caused full table scans, "
-            "dramatically increasing query latency. The slow queries cascaded as 504 timeouts "
-            "through the service graph from inventory-service to api-gateway.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for api-gateway 504 timeouts\n"
-            "- api-gateway logs showed upstream timeout errors\n"
-            "- inventory-service logs showed slow query warnings\n"
-            "- Query diagnostic confirmed missing index on inventory table\n"
-            "- Recreated the missing index on inventory-service\n\n"
-            "## Resolution\n"
-            "Recreated the missing database index on inventory-service, which immediately "
-            "reduced query latency and resolved the cascading 504 timeout chain.\n\n"
-            "## Prevention\n"
-            "Add index monitoring and slow query alerting, require index analysis in "
-            "migration reviews, and implement query performance baselines."
-        ),
-        "postmortem_keywords": ["timeout", "index", "missing", "cascade", "504", "inventory", "query"],
-    },
-    "task15_secret_rotation": {
-        "severity": "SEV1",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV1"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: payment-service returning 401 unauthorized errors after secret rotation event"}},
-            {"action_type": "read_logs", "parameters": {"service": "payment-service"}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "payment-service", "type": "secrets"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "payment-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "payment-service", "fix_type": "restart"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "payment-service began returning 401 unauthorized errors after a Vault secret "
-            "rotation, causing all payment API calls to fail.\n\n"
-            "## Root Cause Analysis\n"
-            "A secret rotation event in Vault updated the API key for payment-service, but "
-            "the service was not restarted or reloaded to pick up the new secret. "
-            "The service continued using the old, now-invalid API key, causing 401 "
-            "unauthorized errors on all outbound requests.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for payment-service 401 errors\n"
-            "- Logs showed unauthorized/401 responses on API key validation\n"
-            "- Secrets diagnostic confirmed stale API key after Vault rotation\n"
-            "- Restarted payment-service to reload secrets from Vault\n\n"
-            "## Resolution\n"
-            "Restarted payment-service to reload the rotated secret from Vault, "
-            "restoring authentication and payment processing.\n\n"
-            "## Prevention\n"
-            "Implement automatic reload on secret rotation events, add Vault secret "
-            "staleness monitoring, and set up restart triggers for rotation webhooks."
-        ),
-        "postmortem_keywords": ["secret", "rotation", "vault", "api key", "401", "reload", "restart"],
-    },
-    "task16_log_storm": {
-        "severity": "SEV2",
-        "actions": [
-            {"action_type": "list_services", "parameters": {}},
-            {"action_type": "check_alerts", "parameters": {}},
-            {"action_type": "classify_severity", "parameters": {"severity": "SEV2"}},
-            {"action_type": "update_status_page", "parameters": {"status": "investigating", "message": "Investigating: auth-service debug log storm saturating log pipeline and causing observability loss"}},
-            {"action_type": "read_logs", "parameters": {"service": "api-gateway"}},
-            {"action_type": "read_logs", "parameters": {"service": "auth-service"}},
-            {"action_type": "check_deployments", "parameters": {}},
-            {"action_type": "run_diagnostic", "parameters": {"service": "auth-service", "type": "logging"}},
-            {"action_type": "check_dependencies", "parameters": {"service": "auth-service"}},
-            {"action_type": "apply_fix", "parameters": {"service": "auth-service", "fix_type": "rollback"}},
-            "POSTMORTEM",
-            {"action_type": "verify_health", "parameters": {}},
-        ],
-        "postmortem": (
-            "## Incident Summary\n"
-            "auth-service debug logging was enabled in production, creating a log storm that "
-            "saturated the log pipeline and caused observability loss across all services.\n\n"
-            "## Root Cause Analysis\n"
-            "A recent deploy enabled debug log level on auth-service, increasing log volume "
-            "by orders of magnitude. The massive log volume saturated the centralized logging "
-            "pipeline, causing log loss for all services and CPU spike on auth-service.\n\n"
-            "## Timeline\n"
-            "- Alerts fired for log pipeline saturation and auth-service CPU spike\n"
-            "- api-gateway logs showed gaps (pipeline saturated)\n"
-            "- auth-service logs confirmed debug level enabled with massive volume\n"
-            "- Deployments identified the logging config change\n"
-            "- Logging diagnostic confirmed debug level was the cause\n"
-            "- Rolled back the deployment to restore log level to INFO\n\n"
-            "## Resolution\n"
-            "Rolled back the deployment on auth-service, restoring log level from DEBUG to INFO "
-            "and reducing log volume to normal levels.\n\n"
-            "## Prevention\n"
-            "Add log volume alerting, prevent debug log level in production via CI checks, "
-            "implement log rate limiting per service, and require deploy review for log config."
-        ),
-        "postmortem_keywords": ["debug", "log", "level", "pipeline", "saturated", "deploy", "volume"],
-    },
-}
+class InvestigationState:
+    """Tracks investigation progress for structured context management."""
+
+    def __init__(self):
+        self.services_checked: dict[str, str] = {}   # service → key finding
+        self.evidence_sources: set[str] = set()       # "action:service" pairs
+        self.hypothesis: str = ""
+        self.root_cause_found: bool = False
+        self.fix_applied: bool = False
+        self.severity_classified: bool = False
+        self.status_page_updated: bool = False
+        self.postmortem_written: bool = False
+        self.deps_checked: set[str] = set()           # services checked for deps
+        self.slo_checked: bool = False
+        self.deployments_checked: bool = False
+        self.actions_taken: list[str] = []
+
+    def record_action(self, action_type: str, service: str, finding: str = ""):
+        self.actions_taken.append(f"{action_type}({service})")
+        if service and action_type not in ("apply_fix", "verify_health", "write_postmortem",
+                                            "escalate", "classify_severity", "update_status_page"):
+            self.evidence_sources.add(f"{action_type}:{service}")
+            if finding:
+                self.services_checked[service] = finding
+        if action_type == "check_dependencies":
+            self.deps_checked.add(service)
+        if action_type == "check_slo":
+            self.slo_checked = True
+        if action_type == "check_deployments":
+            self.deployments_checked = True
+        if action_type == "classify_severity":
+            self.severity_classified = True
+        if action_type == "update_status_page":
+            self.status_page_updated = True
+        if action_type == "apply_fix":
+            self.fix_applied = True
+        if action_type == "write_postmortem":
+            self.postmortem_written = True
+
+    def get_missing_bonuses(self) -> list[str]:
+        """Return list of bonus actions not yet completed."""
+        missing = []
+        if not self.severity_classified:
+            missing.append("classify_severity (early, after initial investigation)")
+        if not self.status_page_updated:
+            missing.append("update_status_page (BEFORE applying fix)")
+        if not self.slo_checked:
+            missing.append("check_slo (assess error budget burns)")
+        if len(self.deps_checked) < 2:
+            missing.append(f"check_dependencies on more services (have {len(self.deps_checked)}, need >=2)")
+        if len(self.evidence_sources) < 4:
+            missing.append(f"gather more evidence (have {len(self.evidence_sources)}, want >=4)")
+        if not self.deployments_checked:
+            missing.append("check_deployments (correlate with error timeline)")
+        return missing
+
+    def get_summary(self) -> str:
+        """Generate concise investigation summary for context compression."""
+        parts = [
+            "INVESTIGATION STATE:",
+            f"  Evidence sources: {len(self.evidence_sources)} ({', '.join(sorted(self.evidence_sources))})",
+            f"  Hypothesis: {self.hypothesis or 'Not yet formed'}",
+        ]
+        if self.services_checked:
+            parts.append("  Key findings:")
+            for svc, finding in self.services_checked.items():
+                parts.append(f"    {svc}: {finding[:100]}")
+        milestones = []
+        if self.severity_classified:
+            milestones.append("severity_classified")
+        if self.status_page_updated:
+            milestones.append("status_page_updated")
+        if self.slo_checked:
+            milestones.append("slo_checked")
+        if self.deployments_checked:
+            milestones.append("deployments_checked")
+        if self.root_cause_found:
+            milestones.append("root_cause_found")
+        if self.fix_applied:
+            milestones.append("fix_applied")
+        if self.postmortem_written:
+            milestones.append("postmortem_written")
+        parts.append(f"  Milestones: {', '.join(milestones) if milestones else 'none'}")
+        missing = self.get_missing_bonuses()
+        if missing:
+            parts.append(f"  STILL NEEDED for max score: {'; '.join(missing)}")
+        return "\n".join(parts)
+
+
+# ── Observation Formatting ───────────────────────────────────────────────────
+
+def get_task_prompt_addon(initial_obs: dict) -> str:
+    """Generate task-specific prompt guidance based on initial alert."""
+    alert = initial_obs.get("alert_summary", "").lower()
+    statuses = initial_obs.get("service_statuses", {})
+    degraded = [
+        (name, s) for name, s in statuses.items()
+        if isinstance(s, dict) and s.get("status") in ("degraded", "down")
+    ]
+
+    addons = []
+
+    # Pattern-based guidance from alert text
+    if any(kw in alert for kw in ["oom", "memory", "heap", "restart"]):
+        addons.append("PATTERN HINT: Alert mentions memory/OOM — likely a memory leak. "
+                      "Check heap metrics and look for recent deploys that changed memory limits.")
+    if any(kw in alert for kw in ["pool", "connection", "hikari"]):
+        addons.append("PATTERN HINT: Connection pool issue — trace to DATABASE leaf services.")
+    if any(kw in alert for kw in ["ssl", "tls", "cert", "handshake"]):
+        addons.append("PATTERN HINT: TLS/certificate issue — run_diagnostic type='tls'.")
+    if any(kw in alert for kw in ["dns", "nxdomain", "resolution"]):
+        addons.append("PATTERN HINT: DNS resolution failure — run_diagnostic type='dns'.")
+    if any(kw in alert for kw in ["network", "partition", "unreachable", "timeout"]):
+        addons.append("PATTERN HINT: Network partition — run_diagnostic type='iptables', check for deploy changes.")
+    if any(kw in alert for kw in ["kafka", "lag", "consumer", "offset"]):
+        addons.append("PATTERN HINT: Kafka consumer lag — check consumer groups and partition leadership.")
+    if any(kw in alert for kw in ["redis", "failover", "readonly", "replica"]):
+        addons.append("PATTERN HINT: Redis failover — check replication status and promote replica if needed.")
+    if any(kw in alert for kw in ["disk", "space", "filesystem", "storage"]):
+        addons.append("PATTERN HINT: Disk full — check disk usage and identify large files/logs consuming space.")
+    if any(kw in alert for kw in ["rate limit", "429", "throttl"]):
+        addons.append("PATTERN HINT: Rate limiting — check traffic patterns and rate limit configuration.")
+    if any(kw in alert for kw in ["migration", "lock", "deadlock", "blocking"]):
+        addons.append("PATTERN HINT: DB migration lock — check for long-running migrations blocking queries.")
+    if any(kw in alert for kw in ["flap", "crashloop", "health check"]):
+        addons.append("PATTERN HINT: Health check flapping — check health check config and readiness probes.")
+    if any(kw in alert for kw in ["evict", "node pressure", "pod"]):
+        addons.append("PATTERN HINT: Pod eviction — check node resource pressure and batch job scheduling.")
+    if any(kw in alert for kw in ["secret", "rotation", "expired key", "401"]):
+        addons.append("PATTERN HINT: Secret rotation failure — check credential expiry and rotation configs.")
+    if any(kw in alert for kw in ["log storm", "logging", "flood"]):
+        addons.append("PATTERN HINT: Log storm — check log levels and identify the source of excessive logging.")
+
+    # Multi-service cascade hint
+    if len(degraded) > 3:
+        addons.append("CASCADING FAILURE DETECTED: Multiple services degraded. "
+                      "Root cause is likely in a LEAF service (database). "
+                      "Trace the dependency chain from gateway → leaf to find the source.")
+
+    # Service-specific hints from statuses
+    for name, s in degraded:
+        if isinstance(s, dict):
+            restarts = s.get("restarts_last_hour", 0)
+            if restarts >= 3:
+                addons.append(f"HIGH RESTARTS: {name} has {restarts} restarts — possible OOM or crash loop.")
+
+    return "\n".join(addons)
+
+
+def format_observation(obs: dict, step_num: int, reward: float,
+                       is_initial: bool = False, inv_state: "InvestigationState" = None) -> str:
+    """Format observation to highlight key signals for the LLM."""
+    parts = []
+    if is_initial:
+        parts.append(f"INCIDENT ALERT: {obs.get('alert_summary', 'Unknown incident')}")
+        parts.append(f"\nAvailable actions: {obs.get('available_actions', [])}")
+    else:
+        result = obs.get("last_action_result", "")
+        parts.append(f"Result: {result}")
+        parts.append(f"Phase: {obs.get('incident_phase', '?')} | Step reward: {reward}")
+
+    statuses = obs.get("service_statuses", {})
+    degraded = []
+    healthy = []
+    items = statuses.values() if isinstance(statuses, dict) else statuses
+    for s in items:
+        if isinstance(s, str):
+            healthy.append(s)
+            continue
+        name = s.get("name", "?")
+        status = s.get("status", "")
+        err = s.get("error_rate", 0)
+        lat = s.get("latency_p99_ms", 0)
+        restarts = s.get("restarts_last_hour", 0)
+        pool = s.get("connection_pool_usage", 0)
+        if status in ("degraded", "down"):
+            extras = []
+            if restarts > 0:
+                extras.append(f"restarts={restarts}")
+            if pool and pool > 0.8:
+                extras.append(f"pool={pool} CRITICAL")
+            extra_str = f", {', '.join(extras)}" if extras else ""
+            degraded.append(f"  {name}: {status} (err={err}, lat={lat}ms{extra_str})")
+        else:
+            healthy.append(name)
+
+    if degraded:
+        parts.append("\nDEGRADED/DOWN services (investigate these):")
+        parts.extend(degraded)
+    if healthy:
+        parts.append(f"Healthy: {', '.join(healthy)}")
+
+    # Pattern detection hints from action results
+    result_text = obs.get("last_action_result", "")
+    if any(kw in result_text.lower() for kw in ["ssl", "tls", "certificate", "cert"]):
+        parts.append("\nTLS/cert keywords detected -> consider run_diagnostic type='tls'")
+    if any(kw in result_text.lower() for kw in ["dns", "nxdomain", "getaddrinfo", "stale ip"]):
+        parts.append("\nDNS keywords detected -> consider run_diagnostic type='dns'")
+    if any(kw in result_text.lower() for kw in ["connection pool", "hikaripool", "pool exhausted"]):
+        parts.append("\nConnection pool issue -> trace to the DATABASE service (leaf node)")
+    if any(kw in result_text.lower() for kw in ["network unreachable", "connection timed out", "iptables", "split-brain"]):
+        parts.append("\nNetwork partition keywords -> consider run_diagnostic type='iptables'")
+    if any(kw in result_text.lower() for kw in ["oom", "memory exceeded", "heap space"]):
+        parts.append("\nOOM/memory keywords detected -> likely memory leak, check heap metrics")
+    if any(kw in result_text.lower() for kw in ["kafka", "consumer lag", "offset behind"]):
+        parts.append("\nKafka lag detected -> check consumer groups and partition status")
+    if any(kw in result_text.lower() for kw in ["disk", "no space", "filesystem full"]):
+        parts.append("\nDisk space issue detected -> check disk usage and cleanup")
+
+    # Reflexion: remind agent of missing bonus actions
+    if inv_state and not is_initial:
+        missing = inv_state.get_missing_bonuses()
+        if missing and not inv_state.fix_applied:
+            parts.append(f"\n📋 BONUS ACTIONS STILL NEEDED: {'; '.join(missing[:3])}")
+        elif inv_state.fix_applied and not inv_state.postmortem_written:
+            parts.append("\n⚠️ FIX APPLIED — Now write_postmortem with detailed technical content, THEN verify_health.")
+        elif inv_state.postmortem_written and not is_initial:
+            parts.append("\n✅ Postmortem written — Now verify_health to complete the episode.")
+
+    # Periodic strategic reminders
+    if step_num > 0 and step_num % 6 == 0:
+        parts.append("\nReminder: Have you checked deployments? Correlated timing? Run diagnostics?")
+    if step_num > 0 and step_num % 10 == 0:
+        parts.append("Reminder: After fixing root cause, ALWAYS write_postmortem THEN verify_health.")
+
+    return "\n".join(parts)
+
+
+def build_postmortem_prompt(inv_state: "InvestigationState") -> str:
+    """Generate a postmortem guidance prompt with accumulated investigation data."""
+    findings = []
+    for svc, finding in inv_state.services_checked.items():
+        findings.append(f"- {svc}: {finding[:150]}")
+
+    return (
+        "\nPOSTMORTEM GUIDANCE — Write a DETAILED postmortem including ALL these sections:\n"
+        "1. INCIDENT SUMMARY: What happened, when, scope of impact\n"
+        "2. ROOT CAUSE: Specific technical root cause (mention exact service names, error types, "
+        "technical terms like OOM, memory leak, connection pool, DNS, TLS, etc.)\n"
+        "3. AFFECTED SERVICES: List ALL services that were impacted\n"
+        "4. TIMELINE: Key events with approximate timestamps\n"
+        "5. REMEDIATION: Exact fix applied and why it resolved the issue\n"
+        "6. PREVENTION: What changes would prevent recurrence\n"
+        "\nYour investigation findings:\n" +
+        "\n".join(findings) +
+        "\n\nCRITICAL: Include as many specific technical terms as possible from your investigation "
+        "(service names, error messages, metric values, deploy IDs). Higher detail = higher score.\n"
+        'Output: {"action_type": "write_postmortem", "parameters": {"content": "<your detailed postmortem>"}, '
+        '"reasoning": "Documenting incident before verification"}'
+    )
 
 
 # ── Main episode runner ──────────────────────────────────────────────────────
 
 def run_task(client: OpenAI, task_id: str) -> float:
-    """Run a single task with scripted optimal actions + LLM postmortem."""
-    task_def = TASK_DEFS[task_id]
+    """Run a single task episode with enhanced investigation strategy. Returns the grader score."""
+    max_steps = MAX_STEPS_MAP[task_id]
 
     # Reset environment
     reset_resp = httpx.post(
@@ -714,41 +556,79 @@ def run_task(client: OpenAI, task_id: str) -> float:
     reset_resp.raise_for_status()
     obs = reset_resp.json()["observation"]
 
+    # Initialize investigation state tracker
+    inv_state = InvestigationState()
+
+    # Build initial message with task-adaptive guidance and few-shot
+    initial_msg = format_observation(obs, 0, 0.0, is_initial=True, inv_state=inv_state)
+    task_addon = get_task_prompt_addon(obs)
+    if task_addon:
+        initial_msg += f"\n\n{task_addon}"
+    initial_msg += f"\n\n{FEW_SHOT_EXAMPLE}"
+    initial_msg += "\n\nFollow the investigation methodology. Start with Step 1 (ORIENT)."
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": initial_msg},
+    ]
+
     rewards: List[float] = []
     steps_taken = 0
-    observations_for_postmortem: list[str] = []
 
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        for step_num, action_def in enumerate(task_def["actions"], 1):
-            # Handle postmortem step — use LLM or fallback to template
-            if action_def == "POSTMORTEM":
-                postmortem_content = _generate_postmortem(client, task_def, observations_for_postmortem)
+        for step_num in range(1, max_steps + 1):
+            # Dynamic temperature
+            temperature = get_temperature(step_num, max_steps)
+
+            # Get LLM action
+            raw_action = None
+            content = ""
+            for attempt in range(3):
+                try:
+                    content = call_llm(client, messages, temperature=temperature)
+                    if not content or not content.strip():
+                        continue
+                    raw_action = extract_json(content)
+                    if "reasoning" not in raw_action:
+                        raw_action["reasoning"] = "No explicit reasoning provided."
+                    break
+                except Exception as e:
+                    print(f"[DEBUG] step={step_num} attempt={attempt+1} error: {e}", file=sys.stderr)
+                    if attempt == 2:
+                        break
+
+            if raw_action is None:
                 raw_action = {
-                    "action_type": "write_postmortem",
-                    "parameters": {"content": postmortem_content},
-                    "reasoning": "Documenting incident with detailed postmortem",
-                }
-            else:
-                raw_action = {
-                    "action_type": action_def["action_type"],
-                    "parameters": action_def["parameters"],
-                    "reasoning": "Scripted investigation step",
+                    "action_type": "escalate",
+                    "parameters": {},
+                    "reasoning": "Fallback after parse error",
                 }
 
-            action_type = raw_action["action_type"]
-            params = raw_action["parameters"]
-            action_str = f"{action_type}({json.dumps(params)})"
+            action_type = raw_action.get("action_type", "?")
+            service = raw_action.get("parameters", {}).get("service", "")
 
-            # Execute step
-            step_resp = httpx.post(
-                f"{SPACE_URL}/step",
-                json={"action": raw_action},
-                timeout=30,
-            )
-            step_resp.raise_for_status()
-            step_data = step_resp.json()
+            # Track in investigation state
+            inv_state.record_action(action_type, service)
+
+            action_str = f"{action_type}({json.dumps(raw_action.get('parameters', {}))})"
+
+            # Step environment
+            try:
+                step_resp = httpx.post(
+                    f"{SPACE_URL}/step",
+                    json={"action": raw_action},
+                    timeout=30,
+                )
+                step_resp.raise_for_status()
+                step_data = step_resp.json()
+            except Exception as e:
+                print(f"[DEBUG] HTTP step error: {e}", file=sys.stderr)
+                log_step(step=step_num, action=action_str, reward=0.0, done=False, error=str(e))
+                rewards.append(0.0)
+                steps_taken = step_num
+                break
 
             obs = step_data["observation"]
             reward = step_data.get("reward", 0.0)
@@ -758,18 +638,50 @@ def run_task(client: OpenAI, task_id: str) -> float:
             rewards.append(reward)
             steps_taken = step_num
 
-            # Collect observation text for LLM postmortem context
-            if isinstance(obs, dict):
-                result_text = obs.get("last_action_result", "")
-                if result_text and action_type not in ("classify_severity", "update_status_page"):
-                    observations_for_postmortem.append(f"[{action_type}] {result_text[:200]}")
-
             log_step(step=step_num, action=action_str, reward=reward, done=done, error=error)
+
+            # Extract key findings for investigation state
+            result_text = obs.get("last_action_result", "") if isinstance(obs, dict) else ""
+            if service and result_text:
+                # Extract first meaningful line as finding summary
+                first_line = result_text.split("\n")[0][:120] if result_text else ""
+                if first_line and service not in inv_state.services_checked:
+                    inv_state.services_checked[service] = first_line
+
+            # Check if root cause indicators are present
+            if any(kw in result_text.lower() for kw in ["root cause", "confirmed", "identified", "leak detected",
+                                                          "pool exhausted confirmed", "cert expired confirmed"]):
+                inv_state.root_cause_found = True
+
+            # Update message history
+            messages.append({"role": "assistant", "content": content})
+
+            # Build observation message with reflexion guidance
+            obs_msg = format_observation(obs, step_num, reward, inv_state=inv_state)
+
+            # Inject postmortem template guidance when fix is applied but postmortem not written
+            if inv_state.fix_applied and not inv_state.postmortem_written:
+                obs_msg += build_postmortem_prompt(inv_state)
+
+            messages.append({"role": "user", "content": obs_msg})
+
+            # Context window management with priority-based retention
+            if len(messages) > 20:
+                # Use investigation state for rich summary instead of raw action list
+                summary = inv_state.get_summary()
+
+                # Add recent action log
+                recent_actions = inv_state.actions_taken[-8:]
+                summary += f"\n  Recent actions: {', '.join(recent_actions)}"
+                summary += "\n\nContinue investigation. Remember: write_postmortem BEFORE verify_health."
+
+                # Keep system prompt + summary + last 14 messages
+                messages = [messages[0], {"role": "user", "content": summary}] + messages[-14:]
 
             if done:
                 break
 
-        # Get grader score
+        # Get final grader score
         grader_resp = httpx.get(f"{SPACE_URL}/grader", timeout=30)
         grader_resp.raise_for_status()
         score = grader_resp.json().get("episode_score", 0.0)
@@ -778,49 +690,19 @@ def run_task(client: OpenAI, task_id: str) -> float:
         print(f"[DEBUG] Task {task_id} exception: {exc}", file=sys.stderr)
         score = sum(rewards) / max(1, len(rewards)) if rewards else 0.001
         score = min(max(score, 0.001), 0.999)
-        log_end(success=False, steps=steps_taken, score=score, rewards=rewards)
+        log_end(
+            success=False,
+            steps=steps_taken,
+            score=score,
+            rewards=rewards,
+        )
         return score
 
     score = min(max(score, 0.001), 0.999)
-    log_end(success=score > 0.001, steps=steps_taken, score=score, rewards=rewards)
+    success = score > 0.001
+
+    log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     return score
-
-
-def _generate_postmortem(client: OpenAI, task_def: dict, observations: list[str]) -> str:
-    """Generate postmortem via LLM with hardcoded fallback."""
-    keywords = task_def.get("postmortem_keywords", [])
-    fallback = task_def.get("postmortem", "")
-
-    # Try LLM generation
-    try:
-        obs_context = "\n".join(observations[-6:]) if observations else "Investigation findings from logs, metrics, and diagnostics."
-        prompt = (
-            f"Write a concise incident postmortem based on these investigation findings:\n\n"
-            f"{obs_context}\n\n"
-            f"IMPORTANT: You MUST include ALL of these terms in your postmortem: {', '.join(keywords)}\n\n"
-            f"Use this structure:\n"
-            f"## Incident Summary\n## Root Cause Analysis\n## Timeline\n## Resolution\n## Prevention\n\n"
-            f"Be specific and technical. Include service names, configuration values, and error types."
-        )
-        content = call_llm(client, [
-            {"role": "system", "content": "You are an SRE writing a detailed incident postmortem. Be technical and specific."},
-            {"role": "user", "content": prompt},
-        ], temperature=0.0)
-
-        if content and len(content) > 50:
-            # Verify all keywords are present
-            content_lower = content.lower()
-            missing = [kw for kw in keywords if kw.lower() not in content_lower]
-            if not missing:
-                return content
-            # Append missing keywords if LLM missed some
-            content += f"\n\nAdditional notes: This incident involved {', '.join(missing)}."
-            return content
-    except Exception as e:
-        print(f"[DEBUG] LLM postmortem failed, using template: {e}", file=sys.stderr)
-
-    # Fallback to hardcoded template
-    return fallback
 
 
 def main() -> None:

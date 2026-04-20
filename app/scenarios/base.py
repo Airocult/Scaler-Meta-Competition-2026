@@ -49,7 +49,6 @@ class BaseScenario(ABC):
         self._fix_applied = False
         self._resolution_verified = False
         self._postmortem_written = False
-        self._root_cause_service = ""  # Override in subclass __init__
 
         # ── Novel: Evidence tracking ──────────────────────────────
         # Tracks distinct (action_type, service) pairs gathered before fix
@@ -175,6 +174,36 @@ class BaseScenario(ABC):
         n = len(self._evidence_sources)
         return min(n * 0.02, 0.08)
 
+    def _efficient_investigation_bonus(self) -> float:
+        """Bonus for reaching root cause quickly relative to max steps.
+        Rewards agents that identify the root cause efficiently.
+        Returns 0.0–0.04 based on investigation speed."""
+        if not self._root_cause_identified:
+            return 0.0
+        # Use current step count as proxy for when investigation concluded
+        efficiency = 1.0 - (self.step_count / max(self.max_steps, 1))
+        if efficiency > 0.7:
+            return 0.04
+        elif efficiency > 0.5:
+            return 0.02
+        elif efficiency > 0.3:
+            return 0.01
+        return 0.0
+
+    def _blast_radius_bonus(self) -> float:
+        """Bonus for assessing blast radius via dependency checks before fixing.
+        Rewards agents that check downstream/upstream impact.
+        Returns 0.0–0.03 based on dependency investigation breadth."""
+        dep_checks = sum(
+            1 for a in self._action_history
+            if a.get("action_type") == "check_dependencies"
+        )
+        if dep_checks >= 2:
+            return 0.03
+        elif dep_checks >= 1:
+            return 0.015
+        return 0.0
+
     def _postmortem_quality_bonus(self, keywords: list[str]) -> float:
         """Score postmortem content for mentioning root-cause keywords.
 
@@ -182,7 +211,7 @@ class BaseScenario(ABC):
         we evaluate whether the postmortem content demonstrates understanding
         of the root cause by checking for domain-specific keywords.
 
-        Returns 0.0–0.08 based on keyword coverage with partial credit.
+        Returns 0.0–0.06 based on keyword coverage.
         """
         if not self._postmortem_written:
             return 0.0
@@ -194,57 +223,10 @@ class BaseScenario(ABC):
                 break
         if not content:
             return 0.0
-
-        # Partial credit: +0.02 for mentioning any root-cause service
-        base_credit = 0.0
-        if hasattr(self, '_root_cause_service'):
-            if self._root_cause_service.lower() in content:
-                base_credit = 0.02
-
-        # Score based on keyword coverage (max 0.06 from keywords)
+        # Score based on keyword coverage
         matches = sum(1 for kw in keywords if kw.lower() in content)
         coverage = matches / max(len(keywords), 1)
-        keyword_bonus = round(min(coverage * 0.06, 0.06), 4)
-
-        return round(min(base_credit + keyword_bonus, 0.08), 4)
-
-    def _efficient_investigation_bonus(self) -> float:
-        """Bonus for reaching root cause / applying fix quickly.
-        +0.03 if root cause identified in first 50% of max_steps.
-        +0.02 if fix applied in first 60% of max_steps.
-        """
-        bonus = 0.0
-        if self._root_cause_identified:
-            # Find the step when root cause was first identified
-            rc_step = self.step_count  # fallback
-            for entry in self._action_history:
-                if entry.get("_root_cause_step"):
-                    rc_step = entry["step"]
-                    break
-            if rc_step <= self.max_steps * 0.5:
-                bonus += 0.03
-
-        if self._fix_applied:
-            fix_step = self.step_count  # fallback
-            for entry in self._action_history:
-                if entry["action_type"] == "apply_fix":
-                    fix_step = entry["step"]
-                    break
-            if fix_step <= self.max_steps * 0.6:
-                bonus += 0.02
-
-        return bonus
-
-    def _blast_radius_bonus(self) -> float:
-        """Bonus for checking dependencies before applying fix.
-        +0.02 if check_dependencies was called before first apply_fix."""
-        dep_checked = False
-        for entry in self._action_history:
-            if entry["action_type"] == "check_dependencies":
-                dep_checked = True
-            if entry["action_type"] == "apply_fix":
-                return 0.02 if dep_checked else 0.0
-        return 0.0
+        return round(min(coverage * 0.06, 0.06), 4)
 
     def _advance_degradation(self) -> None:
         """Worsen service health each step the incident is unresolved."""

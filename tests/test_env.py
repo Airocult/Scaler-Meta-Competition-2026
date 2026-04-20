@@ -405,3 +405,190 @@ async def test_metadata_endpoint():
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "SREBench"
+
+
+# ═══════════════════════════════════════════════════════════
+# 15. Efficient Investigation Bonus
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_efficient_investigation_bonus():
+    """Quick root-cause identification yields higher score via efficiency bonus."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Fast path: minimal steps to identify and fix
+        await reset_task(client, "task1_memory_leak")
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "read_logs", {"service": "order-service"})
+        await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        result_fast = await do_step(client, "verify_health", {"service": "order-service"})
+        fast_score = result_fast["observation"]["episode_score"]
+
+        # Slow path: many unnecessary actions before fixing
+        await reset_task(client, "task1_memory_leak")
+        await do_step(client, "list_services")
+        await do_step(client, "check_alerts")
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "cpu"})
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "read_logs", {"service": "order-service"})
+        await do_step(client, "read_logs", {"service": "api-gateway"})
+        await do_step(client, "check_deployments")
+        await do_step(client, "check_deployments", {"service": "order-service"})
+        await do_step(client, "list_services")
+        await do_step(client, "check_alerts")
+        await do_step(client, "read_logs", {"service": "order-service"})
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        result_slow = await do_step(client, "verify_health", {"service": "order-service"})
+        slow_score = result_slow["observation"]["episode_score"]
+
+        # Fast path should score higher due to time efficiency bonus
+        assert fast_score > slow_score, f"Fast {fast_score} should beat slow {slow_score}"
+
+
+# ═══════════════════════════════════════════════════════════
+# 16. Blast Radius Bonus
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_blast_radius_bonus():
+    """Checking dependencies on 2+ services earns blast radius bonus."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Path WITH dependency checks (blast radius assessment)
+        await reset_task(client, "task1_memory_leak")
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "read_logs", {"service": "order-service"})
+        await do_step(client, "check_dependencies", {"service": "order-service"})
+        await do_step(client, "check_dependencies", {"service": "api-gateway"})
+        await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        result_with = await do_step(client, "verify_health", {"service": "order-service"})
+        score_with = result_with["observation"]["episode_score"]
+
+        # Path WITHOUT dependency checks
+        await reset_task(client, "task1_memory_leak")
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "read_logs", {"service": "order-service"})
+        await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        result_without = await do_step(client, "verify_health", {"service": "order-service"})
+        score_without = result_without["observation"]["episode_score"]
+
+        # Blast radius bonus should lift score
+        assert score_with > score_without, f"With deps {score_with} should beat without {score_without}"
+
+
+# ═══════════════════════════════════════════════════════════
+# 17. Full Optimal Path with All Bonuses (Task 1)
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_task1_max_score_with_all_bonuses():
+    """Task 1 with all bonus actions — should score >= 0.90."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task1_memory_leak")
+        # 1. Orient
+        await do_step(client, "list_services")
+        await do_step(client, "check_alerts")
+        # 2. Assess & communicate
+        await do_step(client, "check_slo")
+        await do_step(client, "classify_severity", {"severity": "SEV1"})
+        await do_step(client, "update_status_page",
+                      {"status": "investigating", "message": "Investigating order-service OOM issue"})
+        # 3. Gather evidence
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "read_logs", {"service": "order-service"})
+        # 4. Blast radius
+        await do_step(client, "check_dependencies", {"service": "order-service"})
+        await do_step(client, "check_dependencies", {"service": "api-gateway"})
+        # 5. Fix
+        await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        # 6. Communicate resolution
+        await do_step(client, "update_status_page",
+                      {"status": "resolved", "message": "Order-service restarted, monitoring recovery"})
+        # 7. Postmortem with rich keywords
+        await do_step(client, "write_postmortem",
+                      {"content": "Root cause: order-service experienced OOM Kill due to memory leak in the heap. "
+                                  "Memory usage grew linearly to 98% before the process was killed. "
+                                  "Affected order-service and downstream api-gateway. Fixed by restarting."})
+        # 8. Verify (ends episode)
+        result = await do_step(client, "verify_health", {"service": "order-service"})
+        assert result["done"] is True
+        score = result["observation"]["episode_score"]
+        assert score >= 0.90, f"Full bonus path should score >= 0.90, got {score}"
+
+
+# ═══════════════════════════════════════════════════════════
+# 18. SLO Awareness Bonus
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_slo_awareness():
+    """check_slo action should provide SLO burn rate information."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task1_memory_leak")
+        result = await do_step(client, "check_slo")
+        # SLO check should return useful information
+        assert "last_action_result" in result["observation"]
+        assert len(result["observation"]["last_action_result"]) > 0
+
+
+# ═══════════════════════════════════════════════════════════
+# 19. Distributed Tracing
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_trace_request():
+    """trace_request should return span waterfall information."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task2_db_cascade")
+        result = await do_step(client, "trace_request", {"service": "api-gateway"})
+        trace_text = result["observation"]["last_action_result"]
+        # Trace should contain span information
+        assert "span" in trace_text.lower() or "trace" in trace_text.lower() or "→" in trace_text
+
+
+# ═══════════════════════════════════════════════════════════
+# 20. Investigation Gating Enforcement
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_investigation_gating():
+    """apply_fix should be rejected if < 2 evidence sources gathered."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await reset_task(client, "task1_memory_leak")
+        # Try fixing immediately — should be gated
+        result = await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        # The fix should be rejected or penalized
+        assert "evidence" in result["observation"]["last_action_result"].lower() or \
+               "investigate" in result["observation"]["last_action_result"].lower() or \
+               result["reward"] < 0
+
+
+# ═══════════════════════════════════════════════════════════
+# 21. Incident Communication Scoring
+# ═══════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_incident_communication_scoring():
+    """classify_severity and update_status_page before fix yield bonus points."""
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Path WITH communication
+        await reset_task(client, "task1_memory_leak")
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "read_logs", {"service": "order-service"})
+        await do_step(client, "classify_severity", {"severity": "SEV1"})
+        await do_step(client, "update_status_page",
+                      {"status": "investigating", "message": "Investigating OOM on order-service"})
+        await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        result_comm = await do_step(client, "verify_health", {"service": "order-service"})
+        score_comm = result_comm["observation"]["episode_score"]
+
+        # Path WITHOUT communication
+        await reset_task(client, "task1_memory_leak")
+        await do_step(client, "check_metrics", {"service": "order-service", "metric": "memory"})
+        await do_step(client, "read_logs", {"service": "order-service"})
+        await do_step(client, "apply_fix", {"service": "order-service", "fix_type": "restart"})
+        result_no_comm = await do_step(client, "verify_health", {"service": "order-service"})
+        score_no_comm = result_no_comm["observation"]["episode_score"]
+
+        # Communication path should score higher
+        assert score_comm > score_no_comm, f"With comm {score_comm} should beat without {score_no_comm}"
+
